@@ -87,12 +87,12 @@ async function loadTasks(force = false) {
       <td><input type="radio" name="taskSel" value="${t.id}" ${selectedTaskId === t.id ? 'checked' : ''}></td>
       <td>${t.id}</td>
       <td>${escapeHtml(t.title || '(无标题)')}</td>
-      <td title="${escapeHtml(t.media_path)}">${escapeHtml(fileName(t.media_path))}</td>
+      <td title="${escapeHtml(t.media_path)}">${t.media_type === 'text' ? '—' : escapeHtml(fileName(t.media_path))}</td>
       <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}${x.last_error ? ` - ${x.last_error}` : ''}`).join('\n'))}">${escapeHtml(t.targets.map(x => x.channel_name).join('、'))}</td>
-      <td>视频</td>
+      <td>${t.media_type === 'text' ? '文本' : (t.media_type === 'image' ? '图片' : '视频')}</td>
       <td class="status-${t.status}">${escapeHtml(t.status)}</td>
       <td>${escapeHtml(t.created_at)}</td>
-    </tr>`).join('') : '<tr><td colspan="8" class="hint">暂无任务。点击“单个视频任务”或“批量视频目录”创建任务。</td></tr>';
+    </tr>`).join('') : '<tr><td colspan="8" class="hint">暂无任务。点击“新建发布任务”创建纯文本、图片或视频任务。</td></tr>';
 
   $$('input[name="taskSel"]').forEach(r => r.addEventListener('change', () => selectedTaskId = Number(r.value)));
 }
@@ -269,7 +269,21 @@ $('#btnAddChannel').addEventListener('click', async () => {
 $('#btnRefreshChannels').onclick = loadChannels;
 $('#btnRefreshTasks').onclick = () => loadTasks(true);
 $('#btnRefreshLogs').onclick = loadLogs;
-$('#btnCreateTask').addEventListener('click', () => $('#taskDialog').showModal());
+$('#btnCreateTask').addEventListener('click', () => {
+  $('#taskMediaType').value = 'text';
+  $('#taskMediaRow').classList.add('hidden');
+  $('#mediaPath').value = '';
+  $('#taskDialog').showModal();
+});
+
+$('#taskMediaType').addEventListener('change', (event) => {
+  const mediaType = event.target.value;
+  const hasMedia = mediaType !== 'text';
+  $('#taskMediaRow').classList.toggle('hidden', !hasMedia);
+  $('#taskMediaLabel').textContent = mediaType === 'image' ? '图片文件' : '视频文件';
+  $('#mediaPath').placeholder = mediaType === 'image' ? '请选择图片文件' : '请选择视频文件';
+  $('#mediaPath').value = '';
+});
 
 $('#btnBatchVideo').addEventListener('click', () => {
   batchVideoFiles = [];
@@ -281,8 +295,8 @@ $('#btnBatchVideo').addEventListener('click', () => {
   $('#batchVideoDialog').showModal();
 });
 
-$('#btnPickVideo').addEventListener('click', async () => {
-  const p = await window.api.pickVideo();
+$('#btnPickMedia').addEventListener('click', async () => {
+  const p = $('#taskMediaType').value === 'image' ? await window.api.pickImage() : await window.api.pickVideo();
   if (p) $('#mediaPath').value = p;
 });
 
@@ -309,16 +323,19 @@ $('#btnBatchSelectAll').addEventListener('click', () => {
 });
 
 $('#btnSaveTask').addEventListener('click', async () => {
+  const mediaType = $('#taskMediaType').value;
   const mediaPath = $('#mediaPath').value.trim();
   const title = $('#taskTitle').value.trim();
   const body = $('#taskBodyText').value.trim();
   const channelIds = $$('#taskChannelList input[type="checkbox"]:checked').map(x => Number(x.value));
-  if (!mediaPath) return alert('请选择视频');
+  if (mediaType === 'image' && !mediaPath) return alert('请选择图片');
+  if (mediaType === 'video' && !mediaPath) return alert('请选择视频');
   if (!channelIds.length) return alert('至少选择一个频道');
   if (!body && !title) {
-    if (!confirm('当前任务没有填写正文/标题，只发布视频，是否继续？')) return;
+    if (mediaType === 'text') return alert('纯文本任务必须填写正文或标题');
+    if (!confirm(`当前任务没有填写正文/标题，只发布${mediaType === 'image' ? '图片' : '视频'}，是否继续？`)) return;
   }
-  await window.api.createTask({ instanceId: currentInstanceId, title, body: body || title, mediaPath, channelIds });
+  await window.api.createTask({ instanceId: currentInstanceId, title, body: body || title, mediaPath, mediaType, channelIds });
   $('#taskDialog').close();
   $('#mediaPath').value = '';
   $('#taskTitle').value = '';
@@ -350,6 +367,7 @@ $('#btnCreateBatchTasks').addEventListener('click', async () => {
         title: base,
         body,
         mediaPath,
+        mediaType: 'video',
         channelIds
       });
     }

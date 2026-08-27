@@ -42,7 +42,7 @@
         <span class="status-pill" id="queueStatus">队列：idle</span>
       </div>
       <div class="actionbar">
-        <button class="primary" id="btnCreateTask">＋ 单个视频任务</button>
+        <button class="primary" id="btnCreateTask">＋ 新建发布任务</button>
         <button id="btnBatchVideo">＋ 批量视频目录</button>
         <button id="btnRunTask">执行选中任务</button>
         <button id="btnRetryTask">↻ 重试失败目标</button>
@@ -141,11 +141,15 @@
 
   <dialog id="taskDialog">
     <form method="dialog" class="modal">
-      <div class="modal-head"><div><h2>单个视频任务</h2><p>Demo v0.3.1</p></div><button value="cancel" class="icon-btn">×</button></div>
+      <div class="modal-head"><div><h2>新建发布任务</h2><p>支持纯文本、单张图片或单个视频</p></div><button value="cancel" class="icon-btn">×</button></div>
       <div class="modal-grid">
         <div class="form-area">
-          <label>视频文件</label>
-          <div class="file-row"><input id="mediaPath" readonly placeholder="请选择视频文件"><button type="button" id="btnPickVideo">浏览...</button></div>
+          <label>任务类型</label>
+          <select id="taskMediaType"><option value="text">纯文本</option><option value="image">图片</option><option value="video">视频</option></select>
+          <div id="taskMediaRow" class="hidden">
+            <label id="taskMediaLabel">素材文件</label>
+            <div class="file-row"><input id="mediaPath" readonly placeholder="请选择素材文件"><button type="button" id="btnPickMedia">浏览...</button></div>
+          </div>
           <label>标题</label><input id="taskTitle" placeholder="当前版本会在正文为空时作为正文使用">
           <label>正文</label><textarea id="taskBodyText" rows="7" placeholder="将写入腾讯频道 ProseMirror 编辑器"></textarea>
           <div class="demo-row"><div><label>开始时间</label><input value="加入队列后按顺序执行" disabled></div><div><label>随机间隔</label><input value="使用设置中的全局间隔" disabled></div></div>

@@ -65,7 +65,10 @@ class BrowserManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        spellcheck: false
+        spellcheck: false,
+        // QQ 频道的发布完成 UI 依赖页面定时器。视图切到后台时也要保持正常速度，
+        // 否则前端进度会被 Chromium 节流，导致本地误判超时。
+        backgroundThrottling: false
       }
     });
 
@@ -349,7 +352,10 @@ class BrowserManager {
     const selectors = this.db.getSelectorMap();
     const timeout = options.wait === false ? 1000 : 10000;
     try {
-      const found = await this.waitForElement(record.view.webContents, selectors.logged_in_user, { visible: true, timeout });
+      // 登录检测可能发生在“发布任务”页，此时 WebContentsView 会被隐藏，
+      // 已登录用户节点仍存在但 getBoundingClientRect() 为 0。这里只判断节点存在，
+      // 否则会把真实登录会话误报为未登录，并在任务开始前直接拦截。
+      const found = await this.waitForElement(record.view.webContents, selectors.logged_in_user, { visible: false, timeout });
       await this.saveAuthState(instanceId, record).catch(error => {
         this.db.log('warn', `实例 #${instanceId} 登录会话保存失败：${String(error?.message || error)}`);
       });
@@ -419,17 +425,52 @@ class BrowserManager {
     throw new Error(`找不到上传控件：${config?.name || 'file_input'}`);
   }
 
-  async waitPublishReady(webContents, selectors) {
+  async clearComposerMedia(webContents) {
+    // 腾讯会在本地保留上一次失败发布的媒体草稿。若不清理，
+    // 新的图片任务可能仍停留在视频上传模式，甚至带上旧素材。
+    for (let i = 0; i < 20; i++) {
+      const item = await this.elementAction(webContents, ['.image-video-container .delete-icon'], 'inspect').catch(() => null);
+      if (!item?.found) return;
+      await this.elementAction(webContents, ['.image-video-container .delete-icon'], 'click');
+      await sleep(250);
+    }
+    throw new NonRetryableError('旧的媒体草稿数量异常，未能在发布前完成清理');
+  }
+
+  async getMediaUploadState(webContents, mediaType) {
+    const source = `(() => {
+      const container = document.querySelector('.image-video-container');
+      if (!container) return { found: false, complete: false, count: 0, uploading: false };
+      const previews = [...container.querySelectorAll('.image-video-preview')];
+      const uploading = Boolean(container.querySelector('.image-mask'));
+      const remoteReady = previews.length > 0 && previews.every(el => /^https?:/i.test(String(el.currentSrc || el.src || '')));
+      const videoReady = ${JSON.stringify(mediaType)} !== 'video' || Boolean(container.querySelector('.play_button'));
+      return {
+        found: true,
+        complete: !uploading && remoteReady && videoReady,
+        count: previews.length,
+        uploading,
+        videoReady
+      };
+    })()`;
+    return webContents.executeJavaScript(source, true);
+  }
+
+  async waitPublishReady(webContents, selectors, hasMedia = true, mediaType = 'video') {
     const timeout = Number(this.db.getSetting('upload_timeout_ms', '120000'));
     const start = Date.now();
     while (Date.now() - start < timeout) {
       const button = await this.elementAction(webContents, selectors.publish_button, 'inspect').catch(() => null);
-      if (button?.found && button.visible && !button.disabled) return true;
+      const media = hasMedia
+        ? await this.getMediaUploadState(webContents, mediaType).catch(() => ({ complete: false }))
+        : { complete: true };
+      if (button?.found && button.visible && !button.disabled && media.complete) return true;
       const errorText = await this.readPageError(webContents, selectors).catch(() => '');
       if (errorText) throw new Error(`页面提示：${errorText}`);
       await sleep(1000);
     }
-    throw new Error(`等待素材上传完成/发表按钮可用超时（${Math.round(timeout / 1000)}秒）`);
+    const waitTarget = hasMedia ? '素材上传完成/发表按钮可用' : '发表按钮可用';
+    throw new Error(`等待${waitTarget}超时（${Math.round(timeout / 1000)}秒）`);
   }
 
   async readPageError(webContents, selectors) {
@@ -439,24 +480,40 @@ class BrowserManager {
 
   async verifyPublishSuccess(webContents, selectors) {
     const timeout = Number(this.db.getSetting('publish_verify_timeout_ms', '20000'));
-    const successStart = Date.now();
-    while (Date.now() - successStart < Math.min(timeout, 3000)) {
+    const start = Date.now();
+    let deadline = start + timeout;
+    let sawPublishing = false;
+
+    while (Date.now() < deadline) {
       const success = await this.elementAction(webContents, selectors.success_hint, 'inspect').catch(() => null);
       if (success?.found && success.visible) return { verified: true, reason: `success_hint:${success.selector}` };
-      await sleep(250);
-    }
 
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
+      const publishing = await this.elementAction(webContents, ['.publish-status .publishing'], 'inspect').catch(() => null);
+      if (publishing?.found) {
+        sawPublishing = true;
+        // 这是腾讯前端的发布过渡动画，动画完成后才会调用真正的发布接口。
+        // 出现该状态后不能按默认 20 秒判失败并重试，否则可能重复发布。
+        deadline = Math.max(deadline, start + 300000);
+      }
+
       const body = await this.elementAction(webContents, selectors.body_input, 'inspect').catch(() => null);
       const button = await this.elementAction(webContents, selectors.publish_button, 'inspect').catch(() => null);
       const normalized = String(body?.text || '').replace(/\s+/g, '').trim();
       if (body?.found && (normalized === '' || normalized === '期待你的分享...') && button?.disabled) {
         return { verified: true, reason: 'editor_reset' };
       }
+
+      if (sawPublishing && !publishing?.found && (!body?.found || normalized === '' || normalized === '期待你的分享...')) {
+        return { verified: true, reason: 'publish_progress_completed' };
+      }
+
       const errorText = await this.readPageError(webContents, selectors).catch(() => '');
-      if (errorText) throw new Error(`发布失败，页面提示：${errorText}`);
+      if (errorText) throw new NonRetryableError(`发布失败，页面提示：${errorText}`);
       await sleep(500);
+    }
+
+    if (sawPublishing) {
+      throw new NonRetryableError('腾讯频道仍在处理本次发表，已禁止自动重试以避免重复帖子；请在内置浏览器确认最终结果');
     }
     throw new Error('点击发表后未检测到明确的发布成功状态');
   }
@@ -488,11 +545,20 @@ class BrowserManager {
       if (!login.loggedIn) throw new Error('QQ 登录状态已失效，请重新登录后继续');
 
       await this.ensureComposerOpen(webContents, selectors);
+      await this.clearComposerMedia(webContents);
       if (task.body) await this.fillProseMirror(webContents, selectors.body_input, task.body);
-      await this.setMediaFile(webContents, selectors.file_input, task.media_path);
-      this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 素材已选择，等待上传完成`);
 
-      await this.waitPublishReady(webContents, selectors);
+      const isTextTask = task.media_type === 'text';
+      if (!isTextTask) {
+        const mediaConfig = task.media_type === 'image' ? selectors.image_input : selectors.file_input;
+        await this.setMediaFile(webContents, mediaConfig, task.media_path);
+        const mediaLabel = task.media_type === 'image' ? '图片' : '视频';
+        this.db.log('info', `任务 #${task.id} -> ${target.channel_name} ${mediaLabel}已选择，等待上传完成`);
+      } else {
+        this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 正文已填写，等待发表按钮可用`);
+      }
+
+      await this.waitPublishReady(webContents, selectors, !isTextTask, task.media_type);
       const publishButton = await this.elementAction(webContents, selectors.publish_button, 'inspect');
       if (!publishButton?.found || publishButton.disabled) throw new Error('发表按钮仍处于 disabled 状态');
       await this.elementAction(webContents, selectors.publish_button, 'click');

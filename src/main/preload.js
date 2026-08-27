@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('api', {
   setSetting: (data) => ipcRenderer.invoke('settings:set', data),
 
   pickVideo: () => ipcRenderer.invoke('dialog:video'),
+  pickImage: () => ipcRenderer.invoke('dialog:image'),
   pickVideoFolder: () => ipcRenderer.invoke('dialog:videoFolder'),
   listLogs: () => ipcRenderer.invoke('logs:list')
 });

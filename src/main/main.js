@@ -62,7 +62,14 @@ function registerIPC() {
   ipcMain.handle('channels:delete', (_, id) => db.deleteChannel(id));
 
   ipcMain.handle('tasks:list', (_, instanceId) => db.listTasks(instanceId));
-  ipcMain.handle('tasks:create', (_, data) => db.createTask(data.instanceId, data.title, data.body, data.mediaPath, data.channelIds));
+  ipcMain.handle('tasks:create', (_, data) => db.createTask(
+    data.instanceId,
+    data.title,
+    data.body,
+    data.mediaPath,
+    data.channelIds,
+    data.mediaType
+  ));
   ipcMain.handle('tasks:run', async (_, taskId) => {
     const task = db.getTask(taskId);
     if (!task) throw new Error('任务不存在');
@@ -132,6 +139,14 @@ function registerIPC() {
     const r = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }]
+    });
+    return r.canceled ? null : r.filePaths[0];
+  });
+
+  ipcMain.handle('dialog:image', async () => {
+    const r = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] }]
     });
     return r.canceled ? null : r.filePaths[0];
   });

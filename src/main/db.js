@@ -79,13 +79,14 @@ class DB {
     const defaults = [
       ['composer_entry', '发帖入口', 'text=期待你的分享\n[placeholder*="期待你的分享"]', 10000],
       ['file_input', '视频上传 input', 'input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]', 30000],
+      ['image_input', '图片上传 input', 'input[type="file"][accept*="image"]\ninput[type="file"][accept*="jpeg"]\ninput[type="file"][accept*="png"]', 30000],
       ['body_input', '正文 ProseMirror', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]', 30000],
-      ['publish_button', '发表按钮', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")', 30000],
+      ['publish_button', '发表按钮', '.publish-button button\nbutton.g-button--primary', 30000],
       ['upload_preview', '上传预览区', '.image-video-container .preview-list', 120000],
       ['success_hint', '发布成功提示', 'text=发表成功\ntext=发布成功', 15000],
       ['logged_in_user', '已登录用户', '.app-login .user-info .name\n.app-login .user-card .name', 10000],
       ['login_button', '登录按钮', 'text=登录\nbutton:has-text("登录")', 10000],
-      ['error_hint', '页面错误提示', '.g-toast--error\n[role="alert"]', 5000]
+      ['error_hint', '页面错误提示', '.publish-status-text.error\n.g-toast--error\n[role="alert"]', 5000]
     ];
 
     const ins = this.db.prepare(`
@@ -102,7 +103,9 @@ class DB {
       ['file_input', '.image-video-container input[type="file"]\ninput[type="file"][accept*="video/mp4"]', 'input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]'],
       ['body_input', 'textarea', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]'],
       ['publish_button', 'button:has-text("发布")', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")'],
-      ['success_hint', 'text=发布成功', 'text=发表成功\ntext=发布成功']
+      ['publish_button', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")', '.publish-button button\nbutton.g-button--primary'],
+      ['success_hint', 'text=发布成功', 'text=发表成功\ntext=发布成功'],
+      ['error_hint', '.g-toast--error\n[role="alert"]', '.publish-status-text.error\n.g-toast--error\n[role="alert"]']
     ];
     const migrate = this.db.prepare('UPDATE selector_configs SET value=? WHERE key=? AND value=?');
     for (const [key, oldValue, newValue] of migrations) migrate.run(newValue, key, oldValue);
@@ -165,9 +168,20 @@ class DB {
     return tasks.map(t => ({ ...t, targets: getTargets.all(t.id) }));
   }
 
-  createTask(instanceId, title, body, mediaPath, channelIds) {
+  createTask(instanceId, title, body, mediaPath, channelIds, mediaType = 'video') {
+    const type = ['text', 'image', 'video'].includes(mediaType) ? mediaType : 'video';
+    const normalizedBody = body || title || '';
+    if (type === 'text' && !normalizedBody.trim()) throw new Error('纯文本任务必须填写正文或标题');
+    if (type === 'image' && !mediaPath) throw new Error('图片任务必须选择图片文件');
+    if (type === 'video' && !mediaPath) throw new Error('视频任务必须选择视频文件');
     const tx = this.db.transaction(() => {
-      const r = this.db.prepare(`INSERT INTO tasks(instance_id,title,body,media_path,media_type,status) VALUES (?,?,?,?, 'video', 'pending')`).run(instanceId, title || '', body || '', mediaPath);
+      const r = this.db.prepare(`INSERT INTO tasks(instance_id,title,body,media_path,media_type,status) VALUES (?,?,?,?,?, 'pending')`).run(
+        instanceId,
+        title || '',
+        normalizedBody,
+        type === 'text' ? '' : mediaPath,
+        type
+      );
       const targetIns = this.db.prepare(`INSERT INTO task_targets(task_id,channel_id,status) VALUES (?,?, 'pending')`);
       for (const cid of channelIds) targetIns.run(r.lastInsertRowid, cid);
       return r.lastInsertRowid;
