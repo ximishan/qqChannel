@@ -12,14 +12,15 @@
       <div class="logo">频</div>
       <div>
         <div class="title">腾讯频道批量发布工具</div>
-        <div class="sub">Electron + Playwright + SQLite · Demo v0.1</div>
+        <div class="sub">Electron + Playwright + SQLite · Demo v0.2</div>
       </div>
     </div>
     <div class="toolbar">
       <button class="primary" id="btnLogin">🔑 登录QQ</button>
+      <button id="btnCheckLogin">检测登录</button>
       <button id="btnNewInstance">＋ 新建实例</button>
       <select id="instanceSelect"></select>
-      <span class="status-pill">实例已加载</span>
+      <span class="status-pill" id="loginStatus">登录状态：未检测</span>
     </div>
   </header>
 
@@ -35,6 +36,7 @@
       <div class="actionbar">
         <button class="primary" id="btnCreateTask">＋ 多频道发布</button>
         <button id="btnRunTask">▶ 执行选中任务</button>
+        <button id="btnRetryTask">↻ 重试失败目标</button>
         <button id="btnRefreshTasks">↻ 刷新</button>
       </div>
       <div class="table-wrap">
@@ -64,15 +66,34 @@
 
     <section id="settings" class="panel">
       <div class="card">
+        <h3>发布运行参数</h3>
+        <div class="grid3">
+          <div>
+            <label>失败重试次数</label>
+            <input id="setting_max_retries" type="number" min="0" max="10">
+          </div>
+          <div>
+            <label>上传等待超时（毫秒）</label>
+            <input id="setting_upload_timeout_ms" type="number" min="10000" step="1000">
+          </div>
+          <div>
+            <label>发布结果确认超时（毫秒）</label>
+            <input id="setting_publish_verify_timeout_ms" type="number" min="5000" step="1000">
+          </div>
+        </div>
+        <button id="btnSaveRuntimeSettings">保存运行参数</button>
+      </div>
+
+      <div class="card">
         <h3>发帖元素定位</h3>
-        <p class="hint">所有关键选择器都保存在 SQLite 中。腾讯频道页面改版后，可以直接在这里修改，不必重新编译软件。</p>
+        <p class="hint">选择器已按真实腾讯频道页面结构更新。每行可填写一个候选选择器，运行时会按顺序尝试。</p>
         <div id="selectorList"></div>
       </div>
       <div class="card">
         <h3>选择器测试</h3>
         <div class="grid3">
           <input id="testUrl" placeholder="频道 URL（可选）">
-          <input id="testSelector" placeholder='例如：button:has-text("发布")'>
+          <input id="testSelector" placeholder='.publish-button button:has-text("发表")'>
           <button id="btnTestSelector">测试并高亮</button>
         </div>
         <div id="testResult" class="result"></div>
@@ -87,14 +108,14 @@
 
   <dialog id="taskDialog">
     <form method="dialog" class="modal">
-      <div class="modal-head"><div><h2>多频道发布</h2><p>Demo v0.1 · 视频任务</p></div><button value="cancel" class="icon-btn">×</button></div>
+      <div class="modal-head"><div><h2>多频道发布</h2><p>Demo v0.2 · 视频任务</p></div><button value="cancel" class="icon-btn">×</button></div>
       <div class="modal-grid">
         <div class="form-area">
           <label>视频文件</label>
           <div class="file-row"><input id="mediaPath" readonly placeholder="请选择 MP4 文件"><button type="button" id="btnPickVideo">浏览...</button></div>
-          <label>标题</label><input id="taskTitle" placeholder="帖子标题（可选）">
-          <label>正文</label><textarea id="taskBodyText" rows="7" placeholder="帖子正文（可选）"></textarea>
-          <div class="demo-row"><div><label>开始时间</label><input value="立即发布" disabled></div><div><label>随机间隔</label><input value="v0.2 加入" disabled></div></div>
+          <label>标题</label><input id="taskTitle" placeholder="当前版本暂不单独写入标题字段">
+          <label>正文</label><textarea id="taskBodyText" rows="7" placeholder="将写入腾讯频道 ProseMirror 编辑器"></textarea>
+          <div class="demo-row"><div><label>开始时间</label><input value="立即发布" disabled></div><div><label>随机间隔</label><input value="v0.3 加入" disabled></div></div>
         </div>
         <div class="target-area">
           <div class="target-head"><strong>选择目标频道（可多选）</strong><button type="button" id="btnSelectAll">全选</button></div>
