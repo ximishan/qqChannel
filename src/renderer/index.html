@@ -12,7 +12,7 @@
       <div class="logo">频</div>
       <div>
         <div class="title">腾讯频道批量发布工具</div>
-        <div class="sub">Electron + Playwright + SQLite · Demo v0.3</div>
+        <div class="sub">Electron + Playwright + SQLite · Demo v0.3.1</div>
       </div>
     </div>
     <div class="toolbar">
@@ -41,7 +41,8 @@
         <span class="status-pill" id="queueStatus">队列：idle</span>
       </div>
       <div class="actionbar">
-        <button class="primary" id="btnCreateTask">＋ 多频道发布</button>
+        <button class="primary" id="btnCreateTask">＋ 单个视频任务</button>
+        <button id="btnBatchVideo">＋ 批量视频目录</button>
         <button id="btnRunTask">执行选中任务</button>
         <button id="btnRetryTask">↻ 重试失败目标</button>
         <button id="btnRefreshTasks">↻ 刷新</button>
@@ -129,12 +130,12 @@
 
   <dialog id="taskDialog">
     <form method="dialog" class="modal">
-      <div class="modal-head"><div><h2>多频道发布</h2><p>Demo v0.3 · 视频任务</p></div><button value="cancel" class="icon-btn">×</button></div>
+      <div class="modal-head"><div><h2>单个视频任务</h2><p>Demo v0.3.1</p></div><button value="cancel" class="icon-btn">×</button></div>
       <div class="modal-grid">
         <div class="form-area">
           <label>视频文件</label>
-          <div class="file-row"><input id="mediaPath" readonly placeholder="请选择 MP4 文件"><button type="button" id="btnPickVideo">浏览...</button></div>
-          <label>标题</label><input id="taskTitle" placeholder="当前版本暂不单独写入标题字段">
+          <div class="file-row"><input id="mediaPath" readonly placeholder="请选择视频文件"><button type="button" id="btnPickVideo">浏览...</button></div>
+          <label>标题</label><input id="taskTitle" placeholder="当前版本会在正文为空时作为正文使用">
           <label>正文</label><textarea id="taskBodyText" rows="7" placeholder="将写入腾讯频道 ProseMirror 编辑器"></textarea>
           <div class="demo-row"><div><label>开始时间</label><input value="加入队列后按顺序执行" disabled></div><div><label>随机间隔</label><input value="使用设置中的全局间隔" disabled></div></div>
         </div>
@@ -144,6 +145,28 @@
         </div>
       </div>
       <div class="modal-actions"><button value="cancel">取消</button><button type="button" class="primary" id="btnSaveTask">创建任务</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="batchVideoDialog">
+    <form method="dialog" class="modal">
+      <div class="modal-head"><div><h2>批量视频目录</h2><p>一个视频文件创建一条任务</p></div><button value="cancel" class="icon-btn">×</button></div>
+      <div class="modal-grid">
+        <div class="form-area">
+          <label>视频目录</label>
+          <div class="file-row"><input id="batchFolder" readonly placeholder="请选择包含视频的目录"><button type="button" id="btnPickVideoFolder">浏览...</button></div>
+          <label>统一正文（可选）</label>
+          <textarea id="batchBody" rows="5" placeholder="可使用 {filename} 代表不含扩展名的文件名"></textarea>
+          <label>识别到的视频</label>
+          <div id="batchVideoSummary" class="hint">尚未选择目录</div>
+          <div id="batchVideoFiles" class="channel-list"></div>
+        </div>
+        <div class="target-area">
+          <div class="target-head"><strong>选择目标频道（可多选）</strong><button type="button" id="btnBatchSelectAll">全选</button></div>
+          <div id="batchChannelList"></div>
+        </div>
+      </div>
+      <div class="modal-actions"><button value="cancel">取消</button><button type="button" class="primary" id="btnCreateBatchTasks">批量创建任务</button></div>
     </form>
   </dialog>
 
