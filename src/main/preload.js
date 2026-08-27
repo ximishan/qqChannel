@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('api', {
   runTask: (id) => ipcRenderer.invoke('tasks:run', id),
   retryFailedTask: (id) => ipcRenderer.invoke('tasks:retryFailed', id),
 
+  schedulerStart: (instanceId) => ipcRenderer.invoke('scheduler:start', instanceId),
+  schedulerPause: (instanceId) => ipcRenderer.invoke('scheduler:pause', instanceId),
+  schedulerResume: (instanceId) => ipcRenderer.invoke('scheduler:resume', instanceId),
+  schedulerStop: (instanceId) => ipcRenderer.invoke('scheduler:stop', instanceId),
+  schedulerState: (instanceId) => ipcRenderer.invoke('scheduler:state', instanceId),
+
   listSelectors: () => ipcRenderer.invoke('selectors:list'),
   saveSelector: (data) => ipcRenderer.invoke('selectors:save', data),
   testSelector: (data) => ipcRenderer.invoke('selectors:test', data),
