@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const DB = require('./db');
 const BrowserManager = require('./browser');
 const TaskScheduler = require('./scheduler');
@@ -80,6 +81,20 @@ function registerIPC() {
       filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }]
     });
     return r.canceled ? null : r.filePaths[0];
+  });
+
+  ipcMain.handle('dialog:videoFolder', async () => {
+    const r = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (r.canceled || !r.filePaths[0]) return null;
+
+    const folder = r.filePaths[0];
+    const supported = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.wmv']);
+    const files = fs.readdirSync(folder, { withFileTypes: true })
+      .filter(entry => entry.isFile() && supported.has(path.extname(entry.name).toLowerCase()))
+      .map(entry => path.join(folder, entry.name))
+      .sort((a, b) => path.basename(a).localeCompare(path.basename(b), 'zh-CN', { numeric: true, sensitivity: 'base' }));
+
+    return { folder, files };
   });
 
   ipcMain.handle('logs:list', () => db.listLogs());
