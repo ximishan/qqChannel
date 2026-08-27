@@ -3,7 +3,7 @@
 技术栈：
 
 - Electron
-- Playwright
+- Electron WebContentsView 内置浏览器
 - SQLite (`better-sqlite3`)
 
 ## 项目文档
@@ -18,7 +18,7 @@
 - Electron 主进程 / Renderer / Preload / IPC。
 - SQLite 本地数据库。
 - 实例创建与切换。
-- 每个实例独立 Chromium Profile。
+- 每个实例使用独立的 Electron 持久会话。
 - QQ 登录态持久化。
 - 登录状态检测。
 - 频道手工添加 / 删除。
@@ -83,7 +83,6 @@
 
 ```bash
 npm install
-npx playwright install chromium
 npm start
 ```
 
@@ -93,11 +92,23 @@ Windows 下也可以运行：
 start-demo.bat
 ```
 
+## Windows 内置浏览器版本
+
+项目直接使用 Electron 自带 Chromium，并以 WebContentsView 嵌入主界面，不依赖客户电脑安装 Google Chrome 或 Microsoft Edge，也不会再打开独立的 Chrome 窗口。
+
+生成 Windows 便携版：
+
+```bash
+npm run build:win
+```
+
+产物位于 `dist/`。Electron 运行时已经包含 Chromium；账号会话、加密登录备份和数据库仍保存在当前 Windows 用户的 Electron `userData` 目录，不会写入程序安装目录。
+
 ## 推荐测试流程
 
 1. 启动软件。
 2. 创建或选择实例。
-3. 点击“登录QQ”，在 Chromium 中完成扫码。
+3. 点击“登录QQ”，程序会切换到“内置浏览器”页，在软件窗口内完成扫码。
 4. 点击“检测登录”，确认顶部显示已登录账号。
 5. 添加一个 `https://pd.qq.com/g/...` 频道。
 6. 创建一条单视频、单频道测试任务。

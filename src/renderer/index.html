@@ -12,7 +12,7 @@
       <div class="logo">频</div>
       <div>
         <div class="title">腾讯频道批量发布工具</div>
-        <div class="sub">Electron + Playwright + SQLite · Demo v0.3.1</div>
+        <div class="sub">Electron 内置浏览器 + SQLite · Demo v0.3.1</div>
       </div>
     </div>
     <div class="toolbar">
@@ -27,6 +27,7 @@
   <main>
     <nav class="tabs">
       <button class="tab active" data-tab="tasks">发布任务</button>
+      <button class="tab" data-tab="browser">内置浏览器</button>
       <button class="tab" data-tab="channels">频道管理</button>
       <button class="tab" data-tab="settings">设置</button>
       <button class="tab" data-tab="logs">日志</button>
@@ -53,6 +54,16 @@
           <tbody id="taskBody"></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="browser" class="panel browser-panel">
+      <div class="browser-toolbar">
+        <button id="btnBrowserBack">← 后退</button>
+        <button id="btnBrowserReload">↻ 刷新</button>
+        <button id="btnBrowserHome">⌂ 腾讯频道首页</button>
+        <span class="browser-note">当前实例使用独立且持久的 QQ 登录会话</span>
+      </div>
+      <div id="embeddedBrowserHost" aria-label="腾讯频道内置浏览器区域"></div>
     </section>
 
     <section id="channels" class="panel">

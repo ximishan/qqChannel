@@ -8,6 +8,10 @@ const TaskScheduler = require('./scheduler');
 let db;
 let browserManager;
 let scheduler;
+let mainWindow;
+
+// 开发版与打包版共用稳定的数据目录，避免 productName 改变后登录态看似丢失。
+app.setPath('userData', path.join(app.getPath('appData'), 'tencent-channel-publisher-demo'));
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -23,14 +27,15 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  return win;
 }
 
 app.whenReady().then(() => {
   db = new DB(app.getPath('userData'));
-  browserManager = new BrowserManager(app.getPath('userData'), db);
+  mainWindow = createWindow();
+  browserManager = new BrowserManager(app.getPath('userData'), db, mainWindow);
   scheduler = new TaskScheduler(db, browserManager);
   registerIPC();
-  createWindow();
 });
 
 app.on('window-all-closed', () => {
@@ -71,6 +76,10 @@ function registerIPC() {
 
   ipcMain.handle('browser:login', async (_, instanceId) => browserManager.openLogin(instanceId));
   ipcMain.handle('browser:status', async (_, instanceId) => browserManager.getLoginStatus(instanceId));
+  ipcMain.handle('browser:view', async (_, data) => browserManager.setViewState(data));
+  ipcMain.handle('browser:home', async (_, instanceId) => browserManager.navigate(instanceId));
+  ipcMain.handle('browser:back', async (_, instanceId) => browserManager.goBack(instanceId));
+  ipcMain.handle('browser:reload', async (_, instanceId) => browserManager.reload(instanceId));
 
   ipcMain.handle('settings:list', () => db.listSettings());
   ipcMain.handle('settings:set', (_, data) => db.setSetting(data.key, data.value));

@@ -2,9 +2,35 @@ let currentInstanceId = null;
 let selectedTaskId = null;
 let schedulerTimer = null;
 let batchVideoFiles = [];
+let activeTab = 'tasks';
+let browserResizeTimer = null;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+
+async function syncBrowserView() {
+  if (!currentInstanceId || !window.api.setBrowserView) return;
+  const host = $('#embeddedBrowserHost');
+  const visible = activeTab === 'browser' && Boolean(host);
+  const rect = visible ? host.getBoundingClientRect() : null;
+  await window.api.setBrowserView({
+    instanceId: currentInstanceId,
+    visible,
+    bounds: rect ? {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height
+    } : undefined
+  });
+}
+
+async function activateTab(tabName) {
+  activeTab = tabName;
+  $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === tabName));
+  $$('.panel').forEach(x => x.classList.toggle('active', x.id === tabName));
+  await syncBrowserView();
+}
 
 async function loadInstances() {
   const rows = await window.api.listInstances();
@@ -165,6 +191,7 @@ $('#instanceSelect').addEventListener('change', async (e) => {
   await refreshAll();
   await checkLoginStatus(false);
   await refreshSchedulerState();
+  await syncBrowserView();
 });
 
 $('#btnNewInstance').addEventListener('click', async () => {
@@ -178,6 +205,7 @@ $('#btnNewInstance').addEventListener('click', async () => {
 $('#btnLogin').addEventListener('click', async () => {
   if (!currentInstanceId) return;
   try {
+    await activateTab('browser');
     const r = await window.api.openLogin(currentInstanceId);
     if (r?.loggedIn) await checkLoginStatus(false);
   } catch (e) {
@@ -186,6 +214,10 @@ $('#btnLogin').addEventListener('click', async () => {
 });
 
 $('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
+
+$('#btnBrowserBack').addEventListener('click', () => window.api.browserBack(currentInstanceId));
+$('#btnBrowserReload').addEventListener('click', () => window.api.browserReload(currentInstanceId));
+$('#btnBrowserHome').addEventListener('click', () => window.api.browserHome(currentInstanceId));
 
 $('#btnQueueStart').addEventListener('click', async () => {
   const status = await window.api.getLoginStatus(currentInstanceId).catch(() => ({loggedIn:false}));
@@ -379,12 +411,12 @@ $('#btnTestSelector').addEventListener('click', async () => {
   }
 });
 
-$$('.tab').forEach(btn => btn.addEventListener('click', () => {
-  $$('.tab').forEach(x => x.classList.remove('active'));
-  $$('.panel').forEach(x => x.classList.remove('active'));
-  btn.classList.add('active');
-  $('#' + btn.dataset.tab).classList.add('active');
-}));
+$$('.tab').forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
+
+window.addEventListener('resize', () => {
+  clearTimeout(browserResizeTimer);
+  browserResizeTimer = setTimeout(() => syncBrowserView().catch(() => {}), 80);
+});
 
 function fileName(p) { return String(p || '').split(/[\\/]/).pop(); }
 function fileStem(p) {

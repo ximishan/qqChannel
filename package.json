@@ -1,17 +1,41 @@
 {
   "name": "tencent-channel-publisher-demo",
   "version": "0.3.1",
-  "description": "Electron + Playwright + SQLite demo for Tencent Channel publishing workflow",
+  "description": "Electron embedded browser + SQLite demo for Tencent Channel publishing workflow",
   "main": "src/main/main.js",
   "scripts": {
+    "postinstall": "electron-builder install-app-deps",
     "start": "electron .",
-    "dev": "electron ."
+    "dev": "electron .",
+    "build:dir": "electron-builder --dir",
+    "build:win": "electron-builder --win portable"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
-    "playwright": "^1.52.0"
+    "better-sqlite3": "^11.8.1"
   },
   "devDependencies": {
-    "electron": "^35.0.0"
+    "electron": "^35.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.ximishan.qqchannel",
+    "productName": "腾讯频道批量发布工具",
+    "artifactName": "qqChannel-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
   }
 }

@@ -25,6 +25,10 @@ contextBridge.exposeInMainWorld('api', {
 
   openLogin: (instanceId) => ipcRenderer.invoke('browser:login', instanceId),
   getLoginStatus: (instanceId) => ipcRenderer.invoke('browser:status', instanceId),
+  setBrowserView: (data) => ipcRenderer.invoke('browser:view', data),
+  browserHome: (instanceId) => ipcRenderer.invoke('browser:home', instanceId),
+  browserBack: (instanceId) => ipcRenderer.invoke('browser:back', instanceId),
+  browserReload: (instanceId) => ipcRenderer.invoke('browser:reload', instanceId),
 
   listSettings: () => ipcRenderer.invoke('settings:list'),
   setSetting: (data) => ipcRenderer.invoke('settings:set', data),
