@@ -1,6 +1,7 @@
 let currentInstanceId = null;
 let selectedTaskId = null;
 let schedulerTimer = null;
+let batchVideoFiles = [];
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -32,11 +33,14 @@ async function loadChannels() {
       <button onclick="deleteChannel(${c.id})">删除</button>
     </div>`).join('') : '<div class="hint">当前实例还没有频道。</div>';
 
-  $('#taskChannelList').innerHTML = rows.length ? rows.map(c => `
+  const options = rows.length ? rows.map(c => `
     <label class="target-check">
       <input type="checkbox" value="${c.id}">
       <span>${escapeHtml(c.name)}</span>
     </label>`).join('') : '<div class="hint">请先添加频道。</div>';
+
+  $('#taskChannelList').innerHTML = options;
+  $('#batchChannelList').innerHTML = options;
 }
 
 async function loadTasks() {
@@ -52,7 +56,7 @@ async function loadTasks() {
       <td>视频</td>
       <td class="status-${t.status}">${escapeHtml(t.status)}</td>
       <td>${escapeHtml(t.created_at)}</td>
-    </tr>`).join('') : '<tr><td colspan="8" class="hint">暂无任务。点击“多频道发布”创建第一条任务。</td></tr>';
+    </tr>`).join('') : '<tr><td colspan="8" class="hint">暂无任务。点击“单个视频任务”或“批量视频目录”创建任务。</td></tr>';
 
   $$('input[name="taskSel"]').forEach(r => r.addEventListener('change', () => selectedTaskId = Number(r.value)));
 }
@@ -223,13 +227,41 @@ $('#btnRefreshTasks').onclick = loadTasks;
 $('#btnRefreshLogs').onclick = loadLogs;
 $('#btnCreateTask').addEventListener('click', () => $('#taskDialog').showModal());
 
+$('#btnBatchVideo').addEventListener('click', () => {
+  batchVideoFiles = [];
+  $('#batchFolder').value = '';
+  $('#batchBody').value = '';
+  $('#batchVideoSummary').textContent = '尚未选择目录';
+  $('#batchVideoFiles').innerHTML = '';
+  $$('#batchChannelList input[type="checkbox"]').forEach(x => x.checked = false);
+  $('#batchVideoDialog').showModal();
+});
+
 $('#btnPickVideo').addEventListener('click', async () => {
   const p = await window.api.pickVideo();
   if (p) $('#mediaPath').value = p;
 });
 
+$('#btnPickVideoFolder').addEventListener('click', async () => {
+  const result = await window.api.pickVideoFolder();
+  if (!result) return;
+  batchVideoFiles = result.files || [];
+  $('#batchFolder').value = result.folder || '';
+  $('#batchVideoSummary').textContent = `识别到 ${batchVideoFiles.length} 个视频文件`;
+  $('#batchVideoFiles').innerHTML = batchVideoFiles.length
+    ? batchVideoFiles.slice(0, 100).map((p, i) => `<div class="channel-item"><strong>${i + 1}</strong><div class="channel-url">${escapeHtml(fileName(p))}</div><span>视频</span></div>`).join('')
+    : '<div class="hint">目录中没有识别到支持的视频文件。</div>';
+  if (batchVideoFiles.length > 100) {
+    $('#batchVideoFiles').insertAdjacentHTML('beforeend', `<div class="hint">仅预览前 100 个，实际会创建 ${batchVideoFiles.length} 条任务。</div>`);
+  }
+});
+
 $('#btnSelectAll').addEventListener('click', () => {
   $$('#taskChannelList input[type="checkbox"]').forEach(x => x.checked = true);
+});
+
+$('#btnBatchSelectAll').addEventListener('click', () => {
+  $$('#batchChannelList input[type="checkbox"]').forEach(x => x.checked = true);
 });
 
 $('#btnSaveTask').addEventListener('click', async () => {
@@ -249,6 +281,44 @@ $('#btnSaveTask').addEventListener('click', async () => {
   $('#taskBodyText').value = '';
   await loadTasks();
   await refreshSchedulerState();
+});
+
+$('#btnCreateBatchTasks').addEventListener('click', async () => {
+  const channelIds = $$('#batchChannelList input[type="checkbox"]:checked').map(x => Number(x.value));
+  if (!batchVideoFiles.length) return alert('请先选择包含视频的目录');
+  if (!channelIds.length) return alert('至少选择一个目标频道');
+
+  const bodyTemplate = $('#batchBody').value.trim();
+  const count = batchVideoFiles.length;
+  if (!confirm(`将创建 ${count} 条视频任务，每条任务发布到 ${channelIds.length} 个频道。\n\n是否继续？`)) return;
+
+  const button = $('#btnCreateBatchTasks');
+  button.disabled = true;
+  const oldText = button.textContent;
+  try {
+    for (let i = 0; i < batchVideoFiles.length; i++) {
+      const mediaPath = batchVideoFiles[i];
+      const base = fileStem(mediaPath);
+      const body = bodyTemplate.replaceAll('{filename}', base);
+      button.textContent = `创建中 ${i + 1}/${count}`;
+      await window.api.createTask({
+        instanceId: currentInstanceId,
+        title: base,
+        body,
+        mediaPath,
+        channelIds
+      });
+    }
+    $('#batchVideoDialog').close();
+    await loadTasks();
+    await refreshSchedulerState();
+    alert(`已创建 ${count} 条视频任务`);
+  } catch (e) {
+    alert(`批量创建中断：${String(e?.message || e)}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = oldText;
+  }
 });
 
 $('#btnRunTask').addEventListener('click', async () => {
@@ -317,6 +387,11 @@ $$('.tab').forEach(btn => btn.addEventListener('click', () => {
 }));
 
 function fileName(p) { return String(p || '').split(/[\\/]/).pop(); }
+function fileStem(p) {
+  const name = fileName(p);
+  const i = name.lastIndexOf('.');
+  return i > 0 ? name.slice(0, i) : name;
+}
 function escapeHtml(s='') { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s='') { return escapeHtml(s); }
 
