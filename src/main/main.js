@@ -48,17 +48,27 @@ function registerIPC() {
     if (!task) throw new Error('任务不存在');
     return browserManager.publishTask(task);
   });
+  ipcMain.handle('tasks:retryFailed', async (_, taskId) => {
+    db.resetFailedTargets(taskId);
+    const task = db.getTask(taskId);
+    if (!task) throw new Error('任务不存在');
+    return browserManager.publishTask(task);
+  });
 
   ipcMain.handle('selectors:list', () => db.getSelectors());
   ipcMain.handle('selectors:save', (_, data) => db.saveSelector(data.key, data.value, data.timeout));
   ipcMain.handle('selectors:test', async (_, data) => browserManager.testSelector(data.instanceId, data.selector, data.url));
 
   ipcMain.handle('browser:login', async (_, instanceId) => browserManager.openLogin(instanceId));
+  ipcMain.handle('browser:status', async (_, instanceId) => browserManager.getLoginStatus(instanceId));
+
+  ipcMain.handle('settings:list', () => db.listSettings());
+  ipcMain.handle('settings:set', (_, data) => db.setSetting(data.key, data.value));
 
   ipcMain.handle('dialog:video', async () => {
     const r = await dialog.showOpenDialog({
       properties: ['openFile'],
-      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm'] }]
+      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }]
     });
     return r.canceled ? null : r.filePaths[0];
   });
