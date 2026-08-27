@@ -42,6 +42,17 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+function schedulerIsBusy(instanceId) {
+  if (!scheduler) return false;
+  const state = scheduler.getState(instanceId);
+  return ['running', 'waiting', 'paused'].includes(state.status) || Boolean(state.currentTaskId);
+}
+
+async function showPublishingBrowser(instanceId) {
+  if (!browserManager) return;
+  await browserManager.setViewState({ instanceId, visible: true });
+}
+
 function registerIPC() {
   ipcMain.handle('instances:list', () => db.listInstances());
   ipcMain.handle('instances:create', (_, name) => db.createInstance(name));
@@ -56,6 +67,10 @@ function registerIPC() {
     const task = db.getTask(taskId);
     if (!task) throw new Error('任务不存在');
 
+    if (schedulerIsBusy(task.instance_id)) {
+      throw new Error('当前实例的发布队列正在运行，请先停止队列后再手动执行任务，避免同一任务被重复执行');
+    }
+
     if (!task.targets || task.targets.length === 0) {
       throw new Error('当前任务没有目标频道，无法执行');
     }
@@ -65,23 +80,37 @@ function registerIPC() {
       throw new Error(`任务 #${task.id} 已经全部发布成功，没有需要再次执行的目标频道`);
     }
 
+    await showPublishingBrowser(task.instance_id);
     return browserManager.publishTask(task);
   });
+
   ipcMain.handle('tasks:retryFailed', async (_, taskId) => {
     const before = db.getTask(taskId);
     if (!before) throw new Error('任务不存在');
+
+    if (schedulerIsBusy(before.instance_id)) {
+      throw new Error('当前实例的发布队列正在运行，请先停止队列后再重试失败任务');
+    }
+
     if (!before.targets?.some(target => target.status === 'failed')) {
       throw new Error(`任务 #${taskId} 没有失败的目标频道，不需要重试`);
     }
 
     db.resetFailedTargets(taskId);
     const task = db.getTask(taskId);
+    await showPublishingBrowser(task.instance_id);
     return browserManager.publishTask(task);
   });
 
-  ipcMain.handle('scheduler:start', (_, instanceId) => scheduler.start(instanceId));
+  ipcMain.handle('scheduler:start', async (_, instanceId) => {
+    await showPublishingBrowser(instanceId);
+    return scheduler.start(instanceId);
+  });
   ipcMain.handle('scheduler:pause', (_, instanceId) => scheduler.pause(instanceId));
-  ipcMain.handle('scheduler:resume', (_, instanceId) => scheduler.resume(instanceId));
+  ipcMain.handle('scheduler:resume', async (_, instanceId) => {
+    await showPublishingBrowser(instanceId);
+    return scheduler.resume(instanceId);
+  });
   ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(instanceId));
   ipcMain.handle('scheduler:state', (_, instanceId) => scheduler.getState(instanceId));
 
