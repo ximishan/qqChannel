@@ -55,12 +55,27 @@ function registerIPC() {
   ipcMain.handle('tasks:run', async (_, taskId) => {
     const task = db.getTask(taskId);
     if (!task) throw new Error('任务不存在');
+
+    if (!task.targets || task.targets.length === 0) {
+      throw new Error('当前任务没有目标频道，无法执行');
+    }
+
+    const executableTargets = task.targets.filter(target => target.status !== 'success');
+    if (executableTargets.length === 0) {
+      throw new Error(`任务 #${task.id} 已经全部发布成功，没有需要再次执行的目标频道`);
+    }
+
     return browserManager.publishTask(task);
   });
   ipcMain.handle('tasks:retryFailed', async (_, taskId) => {
+    const before = db.getTask(taskId);
+    if (!before) throw new Error('任务不存在');
+    if (!before.targets?.some(target => target.status === 'failed')) {
+      throw new Error(`任务 #${taskId} 没有失败的目标频道，不需要重试`);
+    }
+
     db.resetFailedTargets(taskId);
     const task = db.getTask(taskId);
-    if (!task) throw new Error('任务不存在');
     return browserManager.publishTask(task);
   });
 
