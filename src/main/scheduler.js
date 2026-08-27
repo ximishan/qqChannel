@@ -74,6 +74,7 @@ class TaskScheduler {
     const state = this.ensureState(instanceId);
     if (state.status === 'paused') {
       state.status = 'running';
+      state.lastError = '';
       this.db.log('info', `实例 #${instanceId} 发布队列继续`);
     }
     return this.getState(instanceId);
@@ -113,7 +114,7 @@ class TaskScheduler {
       }
 
       state.status = 'waiting';
-      await new Promise(resolve => setTimeout(resolve, Math.min(500, end - Date.now())));
+      await new Promise(resolve => setTimeout(resolve, Math.min(500, Math.max(1, end - Date.now()))));
     }
 
     state.nextRunAt = null;
@@ -144,14 +145,18 @@ class TaskScheduler {
 
         state.currentTaskId = task.id;
         state.lastError = '';
+        let loginInterrupted = false;
 
         try {
           await this.browserManager.publishTask(task);
         } catch (err) {
           state.lastError = String(err?.message || err);
 
-          // 登录失效时停止继续消费队列，避免后续任务全部失败。
+          // 登录失效时恢复本任务为 pending，并暂停整个 worker。
+          // 用户重新登录后“继续”，会从这条未完成任务重新开始，成功目标仍会被跳过。
           if (/未登录|登录状态已失效|登录已失效/.test(state.lastError)) {
+            loginInterrupted = true;
+            this.db.resetFailedTargets(task.id);
             state.status = 'paused';
             this.db.log('warn', `实例 #${state.instanceId} 因登录状态异常自动暂停：${state.lastError}`);
             while (state.status === 'paused' && !state.stopRequested) {
@@ -163,6 +168,9 @@ class TaskScheduler {
 
         state.currentTaskId = null;
         if (state.stopRequested) break;
+
+        // 因登录失效刚恢复时，不追加随机间隔，立即重试刚才的 pending 任务。
+        if (loginInterrupted) continue;
 
         const pending = this.db.countPendingTasks(state.instanceId);
         if (pending <= 0) {
