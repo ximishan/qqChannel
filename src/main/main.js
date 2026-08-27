@@ -2,9 +2,11 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const DB = require('./db');
 const BrowserManager = require('./browser');
+const TaskScheduler = require('./scheduler');
 
 let db;
 let browserManager;
+let scheduler;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -25,6 +27,7 @@ function createWindow() {
 app.whenReady().then(() => {
   db = new DB(app.getPath('userData'));
   browserManager = new BrowserManager(app.getPath('userData'), db);
+  scheduler = new TaskScheduler(db, browserManager);
   registerIPC();
   createWindow();
 });
@@ -54,6 +57,12 @@ function registerIPC() {
     if (!task) throw new Error('任务不存在');
     return browserManager.publishTask(task);
   });
+
+  ipcMain.handle('scheduler:start', (_, instanceId) => scheduler.start(instanceId));
+  ipcMain.handle('scheduler:pause', (_, instanceId) => scheduler.pause(instanceId));
+  ipcMain.handle('scheduler:resume', (_, instanceId) => scheduler.resume(instanceId));
+  ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(instanceId));
+  ipcMain.handle('scheduler:state', (_, instanceId) => scheduler.getState(instanceId));
 
   ipcMain.handle('selectors:list', () => db.getSelectors());
   ipcMain.handle('selectors:save', (_, data) => db.saveSelector(data.key, data.value, data.timeout));
