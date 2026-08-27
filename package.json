@@ -1,0 +1,17 @@
+{
+  "name": "tencent-channel-publisher-demo",
+  "version": "0.1.0",
+  "description": "Electron + Playwright + SQLite demo for Tencent Channel publishing workflow",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "playwright": "^1.52.0"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0"
+  }
+}
