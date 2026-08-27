@@ -108,10 +108,15 @@ class DB {
       ['max_retries', '2'],
       ['upload_timeout_ms', '120000'],
       ['publish_verify_timeout_ms', '20000'],
-      ['screenshot_on_error', '1']
+      ['screenshot_on_error', '1'],
+      ['interval_min_seconds', '180'],
+      ['interval_max_seconds', '480']
     ];
     const setDefault = this.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
     for (const row of settingDefaults) setDefault.run(...row);
+
+    // 软件异常退出时可能留下 running，启动后回到 pending，便于断点继续。
+    this.resetInterruptedTasks();
   }
 
   ensureColumn(table, column, definition) {
@@ -119,6 +124,14 @@ class DB {
     if (!cols.some(c => c.name === column)) {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
+  }
+
+  resetInterruptedTasks() {
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`UPDATE tasks SET status='pending', finished_at=NULL WHERE status='running'`).run();
+      this.db.prepare(`UPDATE task_targets SET status='pending' WHERE status='running'`).run();
+    });
+    tx();
   }
 
   listInstances() { return this.db.prepare('SELECT * FROM instances ORDER BY id ASC').all(); }
@@ -150,9 +163,18 @@ class DB {
     return task;
   }
 
+  getNextPendingTask(instanceId) {
+    const row = this.db.prepare(`SELECT id FROM tasks WHERE instance_id=? AND status='pending' ORDER BY id ASC LIMIT 1`).get(instanceId);
+    return row ? this.getTask(row.id) : null;
+  }
+
+  countPendingTasks(instanceId) {
+    return this.db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE instance_id=? AND status='pending'`).get(instanceId).c;
+  }
+
   setTaskStatus(id, status) {
     const finished = ['success','failed'].includes(status) ? new Date().toISOString() : null;
-    this.db.prepare('UPDATE tasks SET status=?, finished_at=COALESCE(?,finished_at) WHERE id=?').run(status, finished, id);
+    this.db.prepare('UPDATE tasks SET status=?, finished_at=CASE WHEN ? IS NULL THEN finished_at ELSE ? END WHERE id=?').run(status, finished, finished, id);
   }
 
   setTargetStatus(id, status, lastError='') {
