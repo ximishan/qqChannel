@@ -12,10 +12,11 @@ async function loadInstances() {
   sel.value = currentInstanceId;
   currentInstanceId = Number(sel.value);
   await refreshAll();
+  await checkLoginStatus(false);
 }
 
 async function refreshAll() {
-  await Promise.all([loadTasks(), loadChannels(), loadSelectors(), loadLogs()]);
+  await Promise.all([loadTasks(), loadChannels(), loadSelectors(), loadSettings(), loadLogs()]);
 }
 
 async function loadChannels() {
@@ -44,7 +45,7 @@ async function loadTasks() {
       <td>${t.id}</td>
       <td>${escapeHtml(t.title || '(无标题)')}</td>
       <td title="${escapeHtml(t.media_path)}">${escapeHtml(fileName(t.media_path))}</td>
-      <td>${escapeHtml(t.targets.map(x => x.channel_name).join('、'))}</td>
+      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}`).join('\n'))}">${escapeHtml(t.targets.map(x => x.channel_name).join('、'))}</td>
       <td>视频</td>
       <td class="status-${t.status}">${escapeHtml(t.status)}</td>
       <td>${escapeHtml(t.created_at)}</td>
@@ -58,15 +59,48 @@ async function loadSelectors() {
   $('#selectorList').innerHTML = rows.map(r => `
     <div class="selector-row">
       <div class="selector-name">${escapeHtml(r.name)}</div>
-      <input id="sel_${r.key}" value="${escapeAttr(r.value)}">
+      <textarea id="sel_${r.key}" rows="2">${escapeHtml(r.value)}</textarea>
       <input id="timeout_${r.key}" type="number" value="${r.timeout}">
       <button onclick="saveSelector('${r.key}')">保存</button>
     </div>`).join('');
 }
 
+async function loadSettings() {
+  const rows = await window.api.listSettings();
+  const map = Object.fromEntries(rows.map(x => [x.key, x.value]));
+  if ($('#setting_max_retries')) $('#setting_max_retries').value = map.max_retries ?? '2';
+  if ($('#setting_upload_timeout_ms')) $('#setting_upload_timeout_ms').value = map.upload_timeout_ms ?? '120000';
+  if ($('#setting_publish_verify_timeout_ms')) $('#setting_publish_verify_timeout_ms').value = map.publish_verify_timeout_ms ?? '20000';
+}
+
 async function loadLogs() {
   const rows = await window.api.listLogs();
   $('#logBox').textContent = rows.map(r => `[${r.created_at}] [${r.level.toUpperCase()}] ${r.message}`).join('\n');
+}
+
+async function checkLoginStatus(showAlert = false) {
+  if (!currentInstanceId) return;
+  const el = $('#loginStatus');
+  el.textContent = '登录状态：检测中...';
+  try {
+    const r = await window.api.getLoginStatus(currentInstanceId);
+    if (r.loggedIn) {
+      el.textContent = `已登录：${r.name || 'QQ账号'}`;
+      el.style.background = '#edf9f2';
+      el.style.color = '#17a663';
+      if (showAlert) alert(`登录正常：${r.name || 'QQ账号'}`);
+    } else {
+      el.textContent = '登录状态：未登录/已失效';
+      el.style.background = '#fff1f1';
+      el.style.color = '#e55252';
+      if (showAlert) alert('未检测到登录状态，请点击“登录QQ”扫码登录');
+    }
+  } catch (e) {
+    el.textContent = '登录状态：检测失败';
+    el.style.background = '#fff7e6';
+    el.style.color = '#c47b00';
+    if (showAlert) alert(String(e?.message || e));
+  }
 }
 
 window.saveSelector = async (key) => {
@@ -86,6 +120,7 @@ $('#instanceSelect').addEventListener('change', async (e) => {
   currentInstanceId = Number(e.target.value);
   selectedTaskId = null;
   await refreshAll();
+  await checkLoginStatus(false);
 });
 
 $('#btnNewInstance').addEventListener('click', async () => {
@@ -98,13 +133,21 @@ $('#btnNewInstance').addEventListener('click', async () => {
 
 $('#btnLogin').addEventListener('click', async () => {
   if (!currentInstanceId) return;
-  await window.api.openLogin(currentInstanceId);
+  try {
+    const r = await window.api.openLogin(currentInstanceId);
+    if (r?.loggedIn) await checkLoginStatus(false);
+  } catch (e) {
+    alert(String(e?.message || e));
+  }
 });
+
+$('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
 
 $('#btnAddChannel').addEventListener('click', async () => {
   const name = $('#channelName').value.trim();
   const url = $('#channelUrl').value.trim();
   if (!name || !url) return alert('频道名称和URL不能为空');
+  if (!/^https:\/\/pd\.qq\.com\/g\//i.test(url)) return alert('请输入有效的腾讯频道 URL，例如 https://pd.qq.com/g/xxxx');
   await window.api.addChannel({ instanceId: currentInstanceId, name, url });
   $('#channelName').value = '';
   $('#channelUrl').value = '';
@@ -132,7 +175,10 @@ $('#btnSaveTask').addEventListener('click', async () => {
   const channelIds = $$('#taskChannelList input[type="checkbox"]:checked').map(x => Number(x.value));
   if (!mediaPath) return alert('请选择视频');
   if (!channelIds.length) return alert('至少选择一个频道');
-  await window.api.createTask({ instanceId: currentInstanceId, title, body, mediaPath, channelIds });
+  if (!body && !title) {
+    if (!confirm('当前任务没有填写正文/标题，只发布视频，是否继续？')) return;
+  }
+  await window.api.createTask({ instanceId: currentInstanceId, title, body: body || title, mediaPath, channelIds });
   $('#taskDialog').close();
   $('#mediaPath').value = '';
   $('#taskTitle').value = '';
@@ -142,10 +188,37 @@ $('#btnSaveTask').addEventListener('click', async () => {
 
 $('#btnRunTask').addEventListener('click', async () => {
   if (!selectedTaskId) return alert('请先选择一条任务');
-  if (!confirm(`执行任务 #${selectedTaskId}？\n\n请确认元素选择器已经按当前腾讯频道页面配置。`)) return;
-  try { await window.api.runTask(selectedTaskId); } catch (e) { alert(String(e?.message || e)); }
+  if (!confirm(`执行任务 #${selectedTaskId}？\n\n当前 v0.2 会真实打开腾讯频道并尝试发表。`)) return;
+  try {
+    await window.api.runTask(selectedTaskId);
+  } catch (e) {
+    alert(String(e?.message || e));
+  }
   await loadTasks();
   await loadLogs();
+  await checkLoginStatus(false);
+});
+
+$('#btnRetryTask').addEventListener('click', async () => {
+  if (!selectedTaskId) return alert('请先选择一条任务');
+  if (!confirm(`只重新执行任务 #${selectedTaskId} 中失败的目标频道？`)) return;
+  try {
+    await window.api.retryFailedTask(selectedTaskId);
+  } catch (e) {
+    alert(String(e?.message || e));
+  }
+  await loadTasks();
+  await loadLogs();
+});
+
+$('#btnSaveRuntimeSettings').addEventListener('click', async () => {
+  const items = [
+    ['max_retries', $('#setting_max_retries').value],
+    ['upload_timeout_ms', $('#setting_upload_timeout_ms').value],
+    ['publish_verify_timeout_ms', $('#setting_publish_verify_timeout_ms').value]
+  ];
+  for (const [key, value] of items) await window.api.setSetting({ key, value });
+  alert('运行参数已保存');
 });
 
 $('#btnTestSelector').addEventListener('click', async () => {
