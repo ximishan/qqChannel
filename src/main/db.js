@@ -75,9 +75,10 @@ class DB {
 
     // 这些默认值来自用户提供的真实 pd.qq.com 频道页 DOM。
     // value 支持用换行写多个候选选择器，BrowserManager 会按顺序尝试。
+    // 视频任务必须优先匹配 video accept 的 input，不能先命中通用图片区 input。
     const defaults = [
       ['composer_entry', '发帖入口', 'text=期待你的分享\n[placeholder*="期待你的分享"]', 10000],
-      ['file_input', '图片/视频上传 input', '.image-video-container input[type="file"]\ninput[type="file"][accept*="video/mp4"]', 30000],
+      ['file_input', '视频上传 input', 'input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]', 30000],
       ['body_input', '正文 ProseMirror', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]', 30000],
       ['publish_button', '发表按钮', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")', 30000],
       ['upload_preview', '上传预览区', '.image-video-container .preview-list', 120000],
@@ -93,11 +94,12 @@ class DB {
     `);
     for (const item of defaults) ins.run(...item);
 
-    // 兼容 v0.1 已经落库的占位选择器：只迁移明确的旧默认值，用户自定义值不覆盖。
+    // 兼容旧版默认选择器：只迁移明确的旧默认值，用户自定义值不覆盖。
     const migrations = [
       ['composer_entry', 'text=发布动态', '.editor-root-container .ProseMirror\n.ProseMirror[contenteditable="true"]'],
       ['composer_entry', '.editor-root-container .ProseMirror\n.ProseMirror[contenteditable="true"]', 'text=期待你的分享\n[placeholder*="期待你的分享"]'],
-      ['file_input', 'input[type="file"]', '.image-video-container input[type="file"]\ninput[type="file"][accept*="video/mp4"]'],
+      ['file_input', 'input[type="file"]', 'input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]'],
+      ['file_input', '.image-video-container input[type="file"]\ninput[type="file"][accept*="video/mp4"]', 'input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]'],
       ['body_input', 'textarea', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]'],
       ['publish_button', 'button:has-text("发布")', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")'],
       ['success_hint', 'text=发布成功', 'text=发表成功\ntext=发布成功']
@@ -111,6 +113,14 @@ class DB {
       WHERE key='composer_entry'
         AND name='发帖编辑区'
         AND value='text=期待你的分享\n[placeholder*="期待你的分享"]'
+    `).run();
+
+    this.db.prepare(`
+      UPDATE selector_configs
+      SET name='视频上传 input'
+      WHERE key='file_input'
+        AND name='图片/视频上传 input'
+        AND value='input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]'
     `).run();
 
     const settingDefaults = [
