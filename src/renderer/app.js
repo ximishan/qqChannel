@@ -1,5 +1,6 @@
 let currentInstanceId = null;
 let selectedTaskId = null;
+let schedulerTimer = null;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -13,6 +14,8 @@ async function loadInstances() {
   currentInstanceId = Number(sel.value);
   await refreshAll();
   await checkLoginStatus(false);
+  await refreshSchedulerState();
+  startSchedulerPolling();
 }
 
 async function refreshAll() {
@@ -71,6 +74,9 @@ async function loadSettings() {
   if ($('#setting_max_retries')) $('#setting_max_retries').value = map.max_retries ?? '2';
   if ($('#setting_upload_timeout_ms')) $('#setting_upload_timeout_ms').value = map.upload_timeout_ms ?? '120000';
   if ($('#setting_publish_verify_timeout_ms')) $('#setting_publish_verify_timeout_ms').value = map.publish_verify_timeout_ms ?? '20000';
+  if ($('#setting_interval_min_seconds')) $('#setting_interval_min_seconds').value = map.interval_min_seconds ?? '180';
+  if ($('#setting_interval_max_seconds')) $('#setting_interval_max_seconds').value = map.interval_max_seconds ?? '480';
+  if ($('#setting_screenshot_on_error')) $('#setting_screenshot_on_error').value = map.screenshot_on_error ?? '1';
 }
 
 async function loadLogs() {
@@ -103,6 +109,39 @@ async function checkLoginStatus(showAlert = false) {
   }
 }
 
+function startSchedulerPolling() {
+  if (schedulerTimer) clearInterval(schedulerTimer);
+  schedulerTimer = setInterval(async () => {
+    await refreshSchedulerState().catch(() => {});
+  }, 1000);
+}
+
+async function refreshSchedulerState() {
+  if (!currentInstanceId || !window.api.schedulerState) return;
+  const s = await window.api.schedulerState(currentInstanceId);
+  const el = $('#queueStatus');
+  if (!el) return;
+
+  let text = `队列：${s.status}`;
+  if (s.currentTaskId) text += ` · 任务 #${s.currentTaskId}`;
+  if (s.pendingCount != null) text += ` · 待发 ${s.pendingCount}`;
+  if (s.nextRunAt) {
+    const left = Math.max(0, Math.ceil((s.nextRunAt - Date.now()) / 1000));
+    text += ` · ${left}s 后下一条`;
+  }
+  if (s.lastError) text += ` · ${s.lastError}`;
+  el.textContent = text;
+
+  const good = ['running', 'waiting'].includes(s.status);
+  const warn = s.status === 'paused';
+  el.style.background = good ? '#edf9f2' : warn ? '#fff7e6' : '#f1f5f9';
+  el.style.color = good ? '#17a663' : warn ? '#c47b00' : '#64748b';
+
+  if (['idle', 'stopped', 'error'].includes(s.status)) {
+    await loadTasks().catch(() => {});
+  }
+}
+
 window.saveSelector = async (key) => {
   const value = $(`#sel_${key}`).value.trim();
   const timeout = Number($(`#timeout_${key}`).value || 30000);
@@ -121,6 +160,7 @@ $('#instanceSelect').addEventListener('change', async (e) => {
   selectedTaskId = null;
   await refreshAll();
   await checkLoginStatus(false);
+  await refreshSchedulerState();
 });
 
 $('#btnNewInstance').addEventListener('click', async () => {
@@ -142,6 +182,30 @@ $('#btnLogin').addEventListener('click', async () => {
 });
 
 $('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
+
+$('#btnQueueStart').addEventListener('click', async () => {
+  const status = await window.api.getLoginStatus(currentInstanceId).catch(() => ({loggedIn:false}));
+  if (!status.loggedIn) return alert('请先登录 QQ，再启动发布队列');
+  await window.api.schedulerStart(currentInstanceId);
+  await refreshSchedulerState();
+});
+
+$('#btnQueuePause').addEventListener('click', async () => {
+  await window.api.schedulerPause(currentInstanceId);
+  await refreshSchedulerState();
+});
+
+$('#btnQueueResume').addEventListener('click', async () => {
+  const status = await window.api.getLoginStatus(currentInstanceId).catch(() => ({loggedIn:false}));
+  if (!status.loggedIn) return alert('当前 QQ 未登录，重新登录后再继续');
+  await window.api.schedulerResume(currentInstanceId);
+  await refreshSchedulerState();
+});
+
+$('#btnQueueStop').addEventListener('click', async () => {
+  await window.api.schedulerStop(currentInstanceId);
+  await refreshSchedulerState();
+});
 
 $('#btnAddChannel').addEventListener('click', async () => {
   const name = $('#channelName').value.trim();
@@ -184,11 +248,12 @@ $('#btnSaveTask').addEventListener('click', async () => {
   $('#taskTitle').value = '';
   $('#taskBodyText').value = '';
   await loadTasks();
+  await refreshSchedulerState();
 });
 
 $('#btnRunTask').addEventListener('click', async () => {
   if (!selectedTaskId) return alert('请先选择一条任务');
-  if (!confirm(`执行任务 #${selectedTaskId}？\n\n当前 v0.2 会真实打开腾讯频道并尝试发表。`)) return;
+  if (!confirm(`执行任务 #${selectedTaskId}？\n\n这会绕过队列间隔，立即真实尝试发表。`)) return;
   try {
     await window.api.runTask(selectedTaskId);
   } catch (e) {
@@ -212,10 +277,20 @@ $('#btnRetryTask').addEventListener('click', async () => {
 });
 
 $('#btnSaveRuntimeSettings').addEventListener('click', async () => {
+  let minSec = Number($('#setting_interval_min_seconds').value || 0);
+  let maxSec = Number($('#setting_interval_max_seconds').value || 0);
+  if (minSec < 0 || maxSec < 0) return alert('随机间隔不能小于 0 秒');
+  if (maxSec < minSec) [minSec, maxSec] = [maxSec, minSec];
+  $('#setting_interval_min_seconds').value = minSec;
+  $('#setting_interval_max_seconds').value = maxSec;
+
   const items = [
     ['max_retries', $('#setting_max_retries').value],
     ['upload_timeout_ms', $('#setting_upload_timeout_ms').value],
-    ['publish_verify_timeout_ms', $('#setting_publish_verify_timeout_ms').value]
+    ['publish_verify_timeout_ms', $('#setting_publish_verify_timeout_ms').value],
+    ['interval_min_seconds', String(minSec)],
+    ['interval_max_seconds', String(maxSec)],
+    ['screenshot_on_error', $('#setting_screenshot_on_error').value]
   ];
   for (const [key, value] of items) await window.api.setSetting({ key, value });
   alert('运行参数已保存');
