@@ -4,6 +4,7 @@ let schedulerTimer = null;
 let batchVideoFiles = [];
 let activeTab = 'tasks';
 let browserResizeTimer = null;
+let lastRenderedTaskSnapshot = '';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -69,16 +70,25 @@ async function loadChannels() {
   $('#batchChannelList').innerHTML = options;
 }
 
-async function loadTasks() {
+async function loadTasks(force = false) {
   if (!currentInstanceId) return;
   const rows = await window.api.listTasks(currentInstanceId);
+  const snapshot = JSON.stringify(rows.map(t => [
+    t.id,
+    t.status,
+    t.finished_at,
+    ...(t.targets || []).map(x => `${x.id}:${x.status}:${x.retry_count || 0}:${x.last_error || ''}`)
+  ]));
+  if (!force && snapshot === lastRenderedTaskSnapshot) return;
+  lastRenderedTaskSnapshot = snapshot;
+
   $('#taskBody').innerHTML = rows.length ? rows.map(t => `
     <tr>
       <td><input type="radio" name="taskSel" value="${t.id}" ${selectedTaskId === t.id ? 'checked' : ''}></td>
       <td>${t.id}</td>
       <td>${escapeHtml(t.title || '(无标题)')}</td>
       <td title="${escapeHtml(t.media_path)}">${escapeHtml(fileName(t.media_path))}</td>
-      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}`).join('\n'))}">${escapeHtml(t.targets.map(x => x.channel_name).join('、'))}</td>
+      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}${x.last_error ? ` - ${x.last_error}` : ''}`).join('\n'))}">${escapeHtml(t.targets.map(x => x.channel_name).join('、'))}</td>
       <td>视频</td>
       <td class="status-${t.status}">${escapeHtml(t.status)}</td>
       <td>${escapeHtml(t.created_at)}</td>
@@ -167,9 +177,10 @@ async function refreshSchedulerState() {
   el.style.background = good ? '#edf9f2' : warn ? '#fff7e6' : '#f1f5f9';
   el.style.color = good ? '#17a663' : warn ? '#c47b00' : '#64748b';
 
-  if (['idle', 'stopped', 'error'].includes(s.status)) {
-    await loadTasks().catch(() => {});
-  }
+  // 之前只在 idle/stopped/error 时刷新任务表，因此队列已经把 pending
+  // 任务取走并改成 running 后，界面仍一直显示旧的 pending。
+  // 现在所有队列状态都同步任务表；loadTasks 内部做快照去重，避免无变化时重绘。
+  await loadTasks().catch(() => {});
 }
 
 window.saveSelector = async (key) => {
@@ -188,6 +199,7 @@ window.deleteChannel = async (id) => {
 $('#instanceSelect').addEventListener('change', async (e) => {
   currentInstanceId = Number(e.target.value);
   selectedTaskId = null;
+  lastRenderedTaskSnapshot = '';
   await refreshAll();
   await checkLoginStatus(false);
   await refreshSchedulerState();
@@ -199,6 +211,7 @@ $('#btnNewInstance').addEventListener('click', async () => {
   if (!name) return;
   await window.api.createInstance(name);
   currentInstanceId = null;
+  lastRenderedTaskSnapshot = '';
   await loadInstances();
 });
 
@@ -214,7 +227,6 @@ $('#btnLogin').addEventListener('click', async () => {
 });
 
 $('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
-
 $('#btnBrowserBack').addEventListener('click', () => window.api.browserBack(currentInstanceId));
 $('#btnBrowserReload').addEventListener('click', () => window.api.browserReload(currentInstanceId));
 $('#btnBrowserHome').addEventListener('click', () => window.api.browserHome(currentInstanceId));
@@ -255,7 +267,7 @@ $('#btnAddChannel').addEventListener('click', async () => {
 });
 
 $('#btnRefreshChannels').onclick = loadChannels;
-$('#btnRefreshTasks').onclick = loadTasks;
+$('#btnRefreshTasks').onclick = () => loadTasks(true);
 $('#btnRefreshLogs').onclick = loadLogs;
 $('#btnCreateTask').addEventListener('click', () => $('#taskDialog').showModal());
 
@@ -311,7 +323,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
   $('#mediaPath').value = '';
   $('#taskTitle').value = '';
   $('#taskBodyText').value = '';
-  await loadTasks();
+  await loadTasks(true);
   await refreshSchedulerState();
 });
 
@@ -342,7 +354,7 @@ $('#btnCreateBatchTasks').addEventListener('click', async () => {
       });
     }
     $('#batchVideoDialog').close();
-    await loadTasks();
+    await loadTasks(true);
     await refreshSchedulerState();
     alert(`已创建 ${count} 条视频任务`);
   } catch (e) {
@@ -361,7 +373,7 @@ $('#btnRunTask').addEventListener('click', async () => {
   } catch (e) {
     alert(String(e?.message || e));
   }
-  await loadTasks();
+  await loadTasks(true);
   await loadLogs();
   await checkLoginStatus(false);
 });
@@ -374,7 +386,7 @@ $('#btnRetryTask').addEventListener('click', async () => {
   } catch (e) {
     alert(String(e?.message || e));
   }
-  await loadTasks();
+  await loadTasks(true);
   await loadLogs();
 });
 
