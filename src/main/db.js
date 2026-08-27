@@ -43,7 +43,8 @@ class DB {
         task_id INTEGER NOT NULL,
         channel_id INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
-        last_error TEXT
+        last_error TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS selector_configs (
@@ -54,6 +55,11 @@ class DB {
         timeout INTEGER NOT NULL DEFAULT 30000
       );
 
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         level TEXT NOT NULL,
@@ -62,19 +68,57 @@ class DB {
       );
     `);
 
+    this.ensureColumn('task_targets', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+
     const count = this.db.prepare('SELECT COUNT(*) AS c FROM instances').get().c;
     if (!count) this.db.prepare('INSERT INTO instances(name) VALUES (?)').run('默认实例');
 
+    // 这些默认值来自用户提供的真实 pd.qq.com 频道页 DOM。
+    // value 支持用换行写多个候选选择器，BrowserManager 会按顺序尝试。
     const defaults = [
-      ['composer_entry', '发帖入口', 'text=发布动态', 30000],
-      ['file_input', '媒体上传 input', 'input[type="file"]', 30000],
-      ['title_input', '标题输入框', 'input[placeholder*="标题"]', 30000],
-      ['body_input', '正文输入框', 'textarea', 30000],
-      ['publish_button', '发布按钮', 'button:has-text("发布")', 30000],
-      ['success_hint', '成功提示', 'text=发布成功', 30000]
+      ['composer_entry', '发帖编辑区', '.editor-root-container .ProseMirror\n.ProseMirror[contenteditable="true"]', 30000],
+      ['file_input', '图片/视频上传 input', '.image-video-container input[type="file"]\ninput[type="file"][accept*="video/mp4"]', 30000],
+      ['body_input', '正文 ProseMirror', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]', 30000],
+      ['publish_button', '发表按钮', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")', 30000],
+      ['upload_preview', '上传预览区', '.image-video-container .preview-list', 120000],
+      ['success_hint', '发布成功提示', 'text=发表成功\ntext=发布成功', 15000],
+      ['logged_in_user', '已登录用户', '.app-login .user-info .name\n.app-login .user-card .name', 10000],
+      ['login_button', '登录按钮', 'text=登录\nbutton:has-text("登录")', 10000],
+      ['error_hint', '页面错误提示', '.g-toast--error\n[role="alert"]', 5000]
     ];
-    const ins = this.db.prepare('INSERT OR IGNORE INTO selector_configs(key,name,value,timeout) VALUES (?,?,?,?)');
+
+    const ins = this.db.prepare(`
+      INSERT OR IGNORE INTO selector_configs(key,name,value,timeout)
+      VALUES (?,?,?,?)
+    `);
     for (const item of defaults) ins.run(...item);
+
+    // 兼容 v0.1 已经落库的占位选择器：只迁移明确的旧默认值，用户自定义值不覆盖。
+    const migrations = [
+      ['composer_entry', 'text=发布动态', '.editor-root-container .ProseMirror\n.ProseMirror[contenteditable="true"]'],
+      ['file_input', 'input[type="file"]', '.image-video-container input[type="file"]\ninput[type="file"][accept*="video/mp4"]'],
+      ['body_input', 'textarea', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]'],
+      ['publish_button', 'button:has-text("发布")', '.publish-button button:has-text("发表")\nbutton.g-button--primary:has-text("发表")'],
+      ['success_hint', 'text=发布成功', 'text=发表成功\ntext=发布成功']
+    ];
+    const migrate = this.db.prepare('UPDATE selector_configs SET value=? WHERE key=? AND value=?');
+    for (const [key, oldValue, newValue] of migrations) migrate.run(newValue, key, oldValue);
+
+    const settingDefaults = [
+      ['max_retries', '2'],
+      ['upload_timeout_ms', '120000'],
+      ['publish_verify_timeout_ms', '20000'],
+      ['screenshot_on_error', '1']
+    ];
+    const setDefault = this.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
+    for (const row of settingDefaults) setDefault.run(...row);
+  }
+
+  ensureColumn(table, column, definition) {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some(c => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 
   listInstances() { return this.db.prepare('SELECT * FROM instances ORDER BY id ASC').all(); }
@@ -111,10 +155,34 @@ class DB {
     this.db.prepare('UPDATE tasks SET status=?, finished_at=COALESCE(?,finished_at) WHERE id=?').run(status, finished, id);
   }
 
-  setTargetStatus(id, status, lastError='') { this.db.prepare('UPDATE task_targets SET status=?, last_error=? WHERE id=?').run(status, lastError || '', id); }
+  setTargetStatus(id, status, lastError='') {
+    this.db.prepare('UPDATE task_targets SET status=?, last_error=? WHERE id=?').run(status, lastError || '', id);
+  }
+
+  incrementTargetRetry(id) {
+    this.db.prepare('UPDATE task_targets SET retry_count=retry_count+1 WHERE id=?').run(id);
+  }
+
+  resetFailedTargets(taskId) {
+    this.db.prepare(`UPDATE task_targets SET status='pending', last_error='' WHERE task_id=? AND status='failed'`).run(taskId);
+    this.db.prepare(`UPDATE tasks SET status='pending', finished_at=NULL WHERE id=?`).run(taskId);
+  }
+
   getSelectors() { return this.db.prepare('SELECT * FROM selector_configs ORDER BY id ASC').all(); }
   saveSelector(key, value, timeout) { return this.db.prepare('UPDATE selector_configs SET value=?, timeout=? WHERE key=?').run(value, timeout, key); }
   getSelectorMap() { const map = {}; for (const r of this.getSelectors()) map[r.key] = r; return map; }
+
+  getSetting(key, fallback=null) {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+    return row ? row.value : fallback;
+  }
+
+  setSetting(key, value) {
+    this.db.prepare(`INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key, String(value));
+  }
+
+  listSettings() { return this.db.prepare('SELECT key,value FROM settings ORDER BY key').all(); }
+
   log(level, message) { this.db.prepare('INSERT INTO logs(level,message) VALUES (?,?)').run(level, message); }
   listLogs(limit=300) { return this.db.prepare('SELECT * FROM logs ORDER BY id DESC LIMIT ?').all(limit).reverse(); }
 }
