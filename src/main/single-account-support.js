@@ -1,4 +1,7 @@
-module.exports = function installSingleAccountSupport(DB) {
+const fs = require('fs');
+const { TencentChannelCli } = require('./tencent-channel-cli');
+
+module.exports = function installSingleAccountSupport(DB, BrowserManager) {
   const originalInit = DB.prototype.init;
 
   DB.prototype.init = function initSingleAccountMode() {
@@ -8,7 +11,6 @@ module.exports = function installSingleAccountSupport(DB) {
     if (mode === '1') return;
 
     const reset = this.db.transaction(() => {
-      // 之前多账号模式下的数据不再继续沿用，避免三个 QQ 账号的频道分组混到一起。
       this.db.prepare('DELETE FROM task_targets').run();
       this.db.prepare('DELETE FROM tasks').run();
       this.db.prepare('DELETE FROM channels').run();
@@ -23,5 +25,46 @@ module.exports = function installSingleAccountSupport(DB) {
     });
 
     reset();
+  };
+
+  TencentChannelCli.prototype.logout = async function logoutCurrentQQ() {
+    const attempts = [
+      ['login', 'logout', '--json'],
+      ['logout', '--json']
+    ];
+    let lastError = null;
+    for (const args of attempts) {
+      try {
+        const result = await this.run(args, null, { timeoutMs: 30000 });
+        this.guildCache = null;
+        this.channelCache.clear();
+        const status = await this.loginStatus();
+        if (!status.loggedIn) return { success: true, loggedIn: false, ...result };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const status = await this.loginStatus();
+    if (!status.loggedIn) return { success: true, loggedIn: false };
+    throw lastError || new Error('退出 QQ 授权失败');
+  };
+
+  BrowserManager.prototype.logoutPublishing = async function logoutPublishing() {
+    const cli = this.getChannelCli();
+    const result = await cli.logout();
+
+    for (const record of this.views.values()) {
+      try {
+        await record.session.clearStorageData({ storages: ['cookies', 'localstorage', 'sessionstorage'] });
+        record.webStorage = null;
+        record.storageApplied = false;
+        record.restored = true;
+      } catch (_) {}
+    }
+    try { fs.rmSync(this.authStatePath(), { force: true }); } catch (_) {}
+
+    this.db.log('info', '已退出当前 QQ 授权；频道分组、频道和任务记录均保留');
+    return { ...result, loggedIn: false };
   };
 };
