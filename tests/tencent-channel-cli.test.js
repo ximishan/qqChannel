@@ -22,6 +22,43 @@ test('resolveChannel maps the pd guild number and prefers the 全部 board', asy
   });
 });
 
+test('resolveChannel accepts task target aliases channel_name/channel_url', async () => {
+  const cli = new TencentChannelCli();
+  cli.listGuilds = async () => [
+    { guildId: 'guild-22', guildNumber: 'pd87654321', name: '动漫心动社' }
+  ];
+  cli.listChannels = async () => [
+    { channelId: 'board-all', name: '全部' }
+  ];
+
+  const resolved = await cli.resolveChannel({
+    channel_name: '动漫心动社',
+    channel_url: 'https://pd.qq.com/g/pd87654321'
+  });
+
+  assert.deepEqual(resolved, {
+    guildId: 'guild-22', guildNumber: 'pd87654321', channelId: 'board-all', channelName: '全部'
+  });
+});
+
+test('resolveChannel error keeps the real local channel name instead of undefined', async () => {
+  const cli = new TencentChannelCli();
+  cli.listGuilds = async () => [];
+  await assert.rejects(
+    () => cli.resolveChannel({
+      channel_name: '动漫心动社',
+      channel_url: 'https://pd.qq.com/g/pd87654321'
+    }),
+    error => {
+      assert.match(error.message, /动漫心动社/);
+      assert.match(error.message, /pd87654321/);
+      assert.doesNotMatch(error.message, /undefined/);
+      assert.equal(error.retryable, false);
+      return true;
+    }
+  );
+});
+
 test('video publishing and comments use the CLI JSON contract', async () => {
   const calls = [];
   const cli = new TencentChannelCli({
