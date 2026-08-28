@@ -18,16 +18,54 @@ function normalizeToken(value) {
   return match ? match[0] : '';
 }
 
+function findTokenDeep(value, seen = new Set()) {
+  if (value == null) return '';
+  if (typeof value === 'string') {
+    const direct = normalizeToken(value);
+    if (direct) return direct;
+    try {
+      const decoded = Buffer.from(value, 'base64').toString('utf8');
+      const fromBase64 = normalizeToken(decoded);
+      if (fromBase64) return fromBase64;
+    } catch (_) {}
+    return '';
+  }
+  if (typeof value !== 'object' || seen.has(value)) return '';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const token = findTokenDeep(item, seen);
+      if (token) return token;
+    }
+    return '';
+  }
+  const preferredKeys = ['token', 'access_token', 'accessToken', 'qq_ai_connect_token', 'QQ_AI_CONNECT_TOKEN', 'credential', 'credentials'];
+  for (const key of preferredKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      const token = findTokenDeep(value[key], seen);
+      if (token) return token;
+    }
+  }
+  for (const item of Object.values(value)) {
+    const token = findTokenDeep(item, seen);
+    if (token) return token;
+  }
+  return '';
+}
+
 function readTokenFromEnv(file) {
   try {
     const text = fs.readFileSync(file, 'utf8');
     const match = text.match(/^QQ_AI_CONNECT_TOKEN=(.+)$/m);
-    if (!match) return '';
-    let token = String(match[1] || '').trim();
-    if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
-      token = token.slice(1, -1);
+    if (match) {
+      let token = String(match[1] || '').trim();
+      if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+        token = token.slice(1, -1);
+      }
+      const normalized = normalizeToken(token);
+      if (normalized) return normalized;
     }
-    return normalizeToken(token);
+    return normalizeToken(text);
   } catch (_) {
     return '';
   }
@@ -47,16 +85,16 @@ public static class QqCredReader {
   public struct CREDENTIAL {
     public UInt32 Flags;
     public UInt32 Type;
-    public string TargetName;
-    public string Comment;
+    public IntPtr TargetName;
+    public IntPtr Comment;
     public FILETIME LastWritten;
     public UInt32 CredentialBlobSize;
     public IntPtr CredentialBlob;
     public UInt32 Persist;
     public UInt32 AttributeCount;
     public IntPtr Attributes;
-    public string TargetAlias;
-    public string UserName;
+    public IntPtr TargetAlias;
+    public IntPtr UserName;
   }
   [DllImport("advapi32.dll", EntryPoint="CredEnumerateW", CharSet=CharSet.Unicode, SetLastError=true)]
   public static extern bool CredEnumerate(string Filter, UInt32 Flags, out UInt32 Count, out IntPtr Credentials);
@@ -74,12 +112,22 @@ try {
   for ($i = 0; $i -lt $count; $i++) {
     $p = [Runtime.InteropServices.Marshal]::ReadIntPtr($ptr, $i * [IntPtr]::Size)
     $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($p, [type][QqCredReader+CREDENTIAL])
-    if ($cred.CredentialBlobSize -le 0 -or $cred.CredentialBlob -eq [IntPtr]::Zero) { continue }
-    $bytes = New-Object byte[] $cred.CredentialBlobSize
-    [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $bytes.Length)
-    $texts = @([Text.Encoding]::UTF8.GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes))
-    foreach ($text in $texts) {
-      $m = [regex]::Match($text, 'bot:v1_[A-Za-z0-9_-]+')
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($field in @($cred.TargetName, $cred.Comment, $cred.TargetAlias, $cred.UserName)) {
+      if ($field -ne [IntPtr]::Zero) {
+        try { $parts.Add([Runtime.InteropServices.Marshal]::PtrToStringUni($field)) } catch {}
+      }
+    }
+    if ($cred.CredentialBlobSize -gt 0 -and $cred.CredentialBlob -ne [IntPtr]::Zero) {
+      $bytes = New-Object byte[] $cred.CredentialBlobSize
+      [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $bytes.Length)
+      $parts.Add([Text.Encoding]::UTF8.GetString($bytes))
+      $parts.Add([Text.Encoding]::Unicode.GetString($bytes))
+      $parts.Add([Text.Encoding]::ASCII.GetString($bytes))
+      try { $parts.Add([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Text.Encoding]::UTF8.GetString($bytes)))) } catch {}
+    }
+    foreach ($text in $parts) {
+      $m = [regex]::Match([string]$text, 'bot:v1_[A-Za-z0-9_-]+')
       if ($m.Success) {
         $stamp = ([Int64]$cred.LastWritten.dwHighDateTime -shl 32) -bor ([UInt32]$cred.LastWritten.dwLowDateTime)
         if ($stamp -ge $bestTime) {
@@ -90,7 +138,7 @@ try {
     }
   }
 } finally {
-  [QqCredReader]::CredFree($ptr)
+  if ($ptr -ne [IntPtr]::Zero) { [QqCredReader]::CredFree($ptr) }
 }
 if ($bestToken) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bestToken)) }
 `;
@@ -114,8 +162,21 @@ if ($bestToken) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($best
   }
 }
 
-function readFreshLoginToken() {
-  return readTokenFromEnv(globalCredentialFile()) || readTokenFromWindowsCredentialManager();
+function readFreshLoginToken(cli, pollData) {
+  return findTokenDeep(pollData) ||
+    readTokenFromEnv(accountCredentialFile(cli)) ||
+    readTokenFromEnv(globalCredentialFile()) ||
+    readTokenFromWindowsCredentialManager();
+}
+
+function ensureAccountCredentialFile(cli) {
+  const file = accountCredentialFile(cli);
+  if (!file) throw new Error('QQ账号凭证目录无效');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, '# QQ Channel account credential\n', 'utf8');
+  }
+  return file;
 }
 
 function writeAccountToken(cli, token) {
@@ -153,18 +214,12 @@ function installAccountTokenSupport() {
   };
 
   TencentChannelCli.prototype.execute = function executeWithAccountToken(args, payload = null, timeoutMs = 180000) {
-    const isLoginCommand = args?.[0] === 'login';
-    const isLoginStatus = isLoginCommand && args?.[1] === 'status';
-    const credentialFile = accountCredentialFile(this);
+    const credentialFile = ensureAccountCredentialFile(this);
     const previousDotenv = process.env.QQ_AI_CONNECT_DOTENV;
 
-    if (isLoginCommand && !isLoginStatus) {
-      delete process.env.QQ_AI_CONNECT_DOTENV;
-    } else if (credentialFile && fs.existsSync(credentialFile)) {
-      process.env.QQ_AI_CONNECT_DOTENV = credentialFile;
-    } else {
-      delete process.env.QQ_AI_CONNECT_DOTENV;
-    }
+    // 关键：包括 login / poll-token 在内的每一次 CLI 调用都明确指定当前账号自己的 dotenv。
+    // 这样支持 QQ_AI_CONNECT_DOTENV 的 CLI 版本会直接把登录凭证落到账号文件，而不是共享 Windows 登录态。
+    process.env.QQ_AI_CONNECT_DOTENV = credentialFile;
 
     try {
       return originalExecute.call(this, args, payload, timeoutMs);
@@ -176,7 +231,8 @@ function installAccountTokenSupport() {
 
   TencentChannelCli.prototype.loginStatus = async function accountLoginStatus() {
     const credentialFile = accountCredentialFile(this);
-    if (!credentialFile || !fs.existsSync(credentialFile)) {
+    const token = readTokenFromEnv(credentialFile);
+    if (!token) {
       return { loggedIn: false, valid: false, message: '该QQ账号尚未登录' };
     }
     const status = await originalLoginStatus.call(this);
@@ -186,6 +242,7 @@ function installAccountTokenSupport() {
 
   TencentChannelCli.prototype.beginLogin = async function forceAccountLogin() {
     clearAccountToken(this);
+    ensureAccountCredentialFile(this);
     const qrcodePath = path.join(this.userDataPath || os.homedir(), 'qq-channel-login.png');
     const data = await this.run(['login', '--json', '--yes', '--qrcode-path', qrcodePath], null, { timeoutMs: 30000 });
     const returnedPath = String(data.qrcode_path || qrcodePath);
@@ -204,10 +261,11 @@ function installAccountTokenSupport() {
 
   TencentChannelCli.prototype.pollLogin = async function saveAccountTokenAfterLogin() {
     const data = await this.run(['login', 'poll-token', '--json'], null, { timeoutMs: 600000 });
-    const token = readFreshLoginToken();
+    const token = readFreshLoginToken(this, data);
     if (!token) {
       clearAccountToken(this);
-      throw new Error('扫码成功，但未能从本机凭证存储中提取登录凭证，请把日志发给我继续定位');
+      const keys = data && typeof data === 'object' ? Object.keys(data).join(',') : typeof data;
+      throw new Error(`扫码成功，但当前CLI没有返回或写出可保存的独立凭证（poll字段:${keys || '无'}）`);
     }
     writeAccountToken(this, token);
 
@@ -233,6 +291,8 @@ module.exports = {
   installAccountTokenSupport,
   accountCredentialFile,
   globalCredentialFile,
+  normalizeToken,
+  findTokenDeep,
   readTokenFromEnv,
   readTokenFromWindowsCredentialManager,
   readFreshLoginToken,
