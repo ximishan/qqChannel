@@ -89,11 +89,13 @@ class TaskScheduler {
     return this.getState(instanceId);
   }
 
-  randomIntervalMs(task = null) {
-    let min = task?.interval_min_seconds;
-    let max = task?.interval_max_seconds;
-    if (min == null) min = Number(this.db.getSetting('interval_min_seconds', '180'));
-    if (max == null) max = Number(this.db.getSetting('interval_max_seconds', '480'));
+  randomIntervalMs() {
+    // 队列等待时间统一以“设置 -> 发布运行参数”中的当前值为准。
+    // 旧版优先读取任务创建时保存的 interval_min/max_seconds，导致用户后来把
+    // 全局设置从 90~180 秒改成 15~30 秒后，旧任务仍会随机出 166 秒这类旧值。
+    // 现在运行参数是唯一生效来源，修改并保存后，后续任务立即按新范围执行。
+    let min = Number(this.db.getSetting('interval_min_seconds', '180'));
+    let max = Number(this.db.getSetting('interval_max_seconds', '480'));
     if (!Number.isFinite(min)) min = 180;
     if (!Number.isFinite(max)) max = 480;
     min = Math.max(0, Math.floor(min));
@@ -196,8 +198,6 @@ class TaskScheduler {
         } catch (err) {
           state.lastError = String(err?.message || err);
 
-          // 登录失效时恢复本任务为 pending，并暂停整个 worker。
-          // 用户重新登录后“继续”，会从这条未完成任务重新开始，成功目标仍会被跳过。
           if (/未登录|登录状态已失效|登录已失效/.test(state.lastError)) {
             loginInterrupted = true;
             this.db.resetFailedTargets(task.id);
@@ -212,8 +212,6 @@ class TaskScheduler {
 
         state.currentTaskId = null;
         if (state.stopRequested) break;
-
-        // 因登录失效刚恢复时，不追加随机间隔，立即重试刚才的 pending 任务。
         if (loginInterrupted) continue;
 
         const pending = this.db.countPendingTasks(state.instanceId);
@@ -223,8 +221,10 @@ class TaskScheduler {
           return;
         }
 
-        const waitMs = this.randomIntervalMs(task);
-        this.db.log('info', `实例 #${state.instanceId} 下一条任务等待 ${Math.round(waitMs / 1000)} 秒`);
+        const waitMs = this.randomIntervalMs();
+        const minSec = Number(this.db.getSetting('interval_min_seconds', '180'));
+        const maxSec = Number(this.db.getSetting('interval_max_seconds', '480'));
+        this.db.log('info', `实例 #${state.instanceId} 下一条任务等待 ${Math.round(waitMs / 1000)} 秒（当前设置范围 ${Math.min(minSec, maxSec)}~${Math.max(minSec, maxSec)} 秒）`);
         const ok = await this.sleepInterruptible(state, waitMs);
         if (!ok) break;
       }
