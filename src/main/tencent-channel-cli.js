@@ -89,6 +89,42 @@ class TencentChannelCli {
     return candidate;
   }
 
+  isolatedEnvironment() {
+    const env = { ...process.env };
+    if (!this.userDataPath) return env;
+
+    const home = path.resolve(this.userDataPath);
+    const appData = path.join(home, 'AppData', 'Roaming');
+    const localAppData = path.join(home, 'AppData', 'Local');
+    const xdgConfig = path.join(home, '.config');
+    const xdgData = path.join(home, '.local', 'share');
+
+    for (const directory of [home, appData, localAppData, xdgConfig, xdgData]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+
+    // tencent-channel-cli 的认证文件默认位于 ~/.qqcli。不同平台/运行时对“用户目录”
+    // 的解析方式并不完全一致，因此不能只改 HOME/USERPROFILE；Windows 还可能通过
+    // APPDATA/LOCALAPPDATA，部分库则读取 XDG_*。这里统一指向当前 QQ 账号自己的目录，
+    // 确保 login status / login / poll-token / 发帖都不会读到其它账号的凭证。
+    env.HOME = home;
+    env.USERPROFILE = home;
+    env.APPDATA = appData;
+    env.LOCALAPPDATA = localAppData;
+    env.XDG_CONFIG_HOME = xdgConfig;
+    env.XDG_DATA_HOME = xdgData;
+    env.QQCLI_HOME = home;
+    env.QQCLI_CONFIG_DIR = path.join(home, '.qqcli');
+    env.TENCENT_CHANNEL_CLI_HOME = home;
+
+    // 避免宿主进程意外设置的 token 环境变量绕过账号目录隔离。
+    delete env.QQCLI_TOKEN;
+    delete env.QQ_CHANNEL_TOKEN;
+    delete env.TENCENT_CHANNEL_TOKEN;
+
+    return env;
+  }
+
   execute(args, payload = null, timeoutMs = 180000) {
     if (this.executor) return this.executor(args, payload, timeoutMs);
     const cliPath = this.findCli();
@@ -102,19 +138,14 @@ class TencentChannelCli {
         commandArgs = ['/d', '/s', '/c', staticCommand];
       }
 
-      const isolatedEnv = { ...process.env };
-      if (this.userDataPath) {
-        fs.mkdirSync(this.userDataPath, { recursive: true });
-        // tencent-channel-cli 默认把凭证放在用户 Home 下的 .qqcli。
-        // 为每个 QQ 账号提供独立 Home，从根上隔离登录凭证和二维码缓存。
-        isolatedEnv.HOME = this.userDataPath;
-        isolatedEnv.USERPROFILE = this.userDataPath;
-      }
+      const env = this.isolatedEnvironment();
+      const cwd = this.userDataPath ? path.resolve(this.userDataPath) : undefined;
 
       const child = spawn(command, commandArgs, {
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: isolatedEnv
+        env,
+        cwd
       });
       let stdout = '';
       let stderr = '';
