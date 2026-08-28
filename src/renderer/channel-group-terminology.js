@@ -88,8 +88,6 @@
   });
 
   document.querySelector('#btnManageInstance')?.addEventListener('click', () => {
-    // app.js 先打开弹窗；下一轮事件循环再从数据库重新读取当前分组名称，
-    // 避免旧的动态文案/状态覆盖 input.value，导致管理弹窗只显示 placeholder。
     setTimeout(() => {
       normalizeControls();
       fillCurrentGroupName();
@@ -99,10 +97,7 @@
   const form = document.querySelector('#instanceForm');
   form?.addEventListener('submit', () => {
     const input = document.querySelector('#instanceName');
-    if (form.dataset.mode === 'edit' && input) {
-      // 保留用户实际输入，术语脚本不再改写编辑框 value。
-      input.value = String(input.value || '').trim();
-    }
+    if (form.dataset.mode === 'edit' && input) input.value = String(input.value || '').trim();
   }, true);
 
   // 任务列表默认展示全部任务；单独脚本提供频道分组筛选和 QQ 频道搜索。
@@ -110,6 +105,14 @@
     const script = document.createElement('script');
     script.src = 'task-list-filters.js';
     script.dataset.taskListFilters = '1';
+    document.body.appendChild(script);
+  }
+
+  // 账号工作区：退出后没有频道分组时仍允许登录；登录成功后按 account_id 恢复对应数据。
+  if (!document.querySelector('script[data-account-workspace-ui]')) {
+    const script = document.createElement('script');
+    script.src = 'account-workspace-ui.js';
+    script.dataset.accountWorkspaceUi = '1';
     document.body.appendChild(script);
   }
 })();
