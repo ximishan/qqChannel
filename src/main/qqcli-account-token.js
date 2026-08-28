@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { TencentChannelCli } = require('./tencent-channel-cli');
 
 function accountCredentialFile(cli) {
@@ -12,6 +13,11 @@ function globalCredentialFile() {
   return path.join(os.homedir(), '.qqcli', '.env');
 }
 
+function normalizeToken(value) {
+  const match = String(value || '').match(/bot:v1_[A-Za-z0-9_-]+/);
+  return match ? match[0] : '';
+}
+
 function readTokenFromEnv(file) {
   try {
     const text = fs.readFileSync(file, 'utf8');
@@ -21,17 +27,103 @@ function readTokenFromEnv(file) {
     if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
       token = token.slice(1, -1);
     }
-    return token.trim();
+    return normalizeToken(token);
   } catch (_) {
     return '';
   }
 }
 
+function readTokenFromWindowsCredentialManager() {
+  if (process.platform !== 'win32') return '';
+
+  const ps = String.raw`
+$ErrorActionPreference = 'Stop'
+$src = @"
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+public static class QqCredReader {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct CREDENTIAL {
+    public UInt32 Flags;
+    public UInt32 Type;
+    public string TargetName;
+    public string Comment;
+    public FILETIME LastWritten;
+    public UInt32 CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public UInt32 Persist;
+    public UInt32 AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias;
+    public string UserName;
+  }
+  [DllImport("advapi32.dll", EntryPoint="CredEnumerateW", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredEnumerate(string Filter, UInt32 Flags, out UInt32 Count, out IntPtr Credentials);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern void CredFree(IntPtr Buffer);
+}
+"@
+Add-Type -TypeDefinition $src
+$count = 0
+$ptr = [IntPtr]::Zero
+if (-not [QqCredReader]::CredEnumerate($null, 0, [ref]$count, [ref]$ptr)) { exit 0 }
+$bestToken = $null
+$bestTime = [Int64]::MinValue
+try {
+  for ($i = 0; $i -lt $count; $i++) {
+    $p = [Runtime.InteropServices.Marshal]::ReadIntPtr($ptr, $i * [IntPtr]::Size)
+    $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($p, [type][QqCredReader+CREDENTIAL])
+    if ($cred.CredentialBlobSize -le 0 -or $cred.CredentialBlob -eq [IntPtr]::Zero) { continue }
+    $bytes = New-Object byte[] $cred.CredentialBlobSize
+    [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $bytes.Length)
+    $texts = @([Text.Encoding]::UTF8.GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes))
+    foreach ($text in $texts) {
+      $m = [regex]::Match($text, 'bot:v1_[A-Za-z0-9_-]+')
+      if ($m.Success) {
+        $stamp = ([Int64]$cred.LastWritten.dwHighDateTime -shl 32) -bor ([UInt32]$cred.LastWritten.dwLowDateTime)
+        if ($stamp -ge $bestTime) {
+          $bestTime = $stamp
+          $bestToken = $m.Value
+        }
+      }
+    }
+  }
+} finally {
+  [QqCredReader]::CredFree($ptr)
+}
+if ($bestToken) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bestToken)) }
+`;
+
+  try {
+    const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded
+    ], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024
+    });
+    if (result.error || result.status !== 0) return '';
+    const line = String(result.stdout || '').trim().split(/\r?\n/).filter(Boolean).pop() || '';
+    if (!line) return '';
+    return normalizeToken(Buffer.from(line, 'base64').toString('utf8'));
+  } catch (_) {
+    return '';
+  }
+}
+
+function readFreshLoginToken() {
+  return readTokenFromEnv(globalCredentialFile()) || readTokenFromWindowsCredentialManager();
+}
+
 function writeAccountToken(cli, token) {
+  const normalized = normalizeToken(token);
   const file = accountCredentialFile(cli);
-  if (!file || !token) throw new Error('没有读取到 QQ 登录凭证，请重新扫码登录');
+  if (!file || !normalized) throw new Error('没有读取到 QQ 登录凭证，请重新扫码登录');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `# QQ Channel account credential\nQQ_AI_CONNECT_TOKEN="${token.replace(/"/g, '\\"')}"\n`, 'utf8');
+  fs.writeFileSync(file, `# QQ Channel account credential\nQQ_AI_CONNECT_TOKEN="${normalized}"\n`, 'utf8');
   try { fs.chmodSync(file, 0o600); } catch (_) {}
   return file;
 }
@@ -61,8 +153,6 @@ function installAccountTokenSupport() {
   };
 
   TencentChannelCli.prototype.execute = function executeWithAccountToken(args, payload = null, timeoutMs = 180000) {
-    // login status 必须使用当前账号自己的 token；其它 login 子命令属于全局扫码流程，
-    // 不能带任何已有账号的 QQ_AI_CONNECT_DOTENV。
     const isLoginCommand = args?.[0] === 'login';
     const isLoginStatus = isLoginCommand && args?.[1] === 'status';
     const credentialFile = accountCredentialFile(this);
@@ -114,17 +204,17 @@ function installAccountTokenSupport() {
 
   TencentChannelCli.prototype.pollLogin = async function saveAccountTokenAfterLogin() {
     const data = await this.run(['login', 'poll-token', '--json'], null, { timeoutMs: 600000 });
-    const token = readTokenFromEnv(globalCredentialFile());
+    const token = readFreshLoginToken();
     if (!token) {
       clearAccountToken(this);
-      throw new Error('扫码成功，但没有读取到独立账号凭证，请重新登录');
+      throw new Error('扫码成功，但未能从本机凭证存储中提取登录凭证，请把日志发给我继续定位');
     }
     writeAccountToken(this, token);
 
     const status = await originalLoginStatus.call(this);
     if (!status?.loggedIn || !status?.valid) {
       clearAccountToken(this);
-      throw new Error('QQ账号凭证保存后校验失败，请重新登录');
+      throw new Error('QQ账号独立凭证已保存，但校验失败，请重新登录');
     }
     return { ...data, ...status };
   };
@@ -144,6 +234,8 @@ module.exports = {
   accountCredentialFile,
   globalCredentialFile,
   readTokenFromEnv,
+  readTokenFromWindowsCredentialManager,
+  readFreshLoginToken,
   writeAccountToken,
   clearAccountToken
 };
