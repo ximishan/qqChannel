@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const DB = require('./db');
@@ -19,6 +19,7 @@ function createWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 700,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -26,11 +27,13 @@ function createWindow() {
     }
   });
 
+  win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '../renderer/index.html'));
   return win;
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   db = new DB(app.getPath('userData'));
   mainWindow = createWindow();
   browserManager = new BrowserManager(app.getPath('userData'), db, mainWindow);
@@ -48,28 +51,53 @@ function schedulerIsBusy(instanceId) {
   return ['running', 'waiting', 'paused'].includes(state.status) || Boolean(state.currentTaskId);
 }
 
-async function showPublishingBrowser(instanceId) {
+async function hidePublishingBrowser(instanceId) {
   if (!browserManager) return;
-  await browserManager.setViewState({ instanceId, visible: true });
+  await browserManager.setViewState({ instanceId, visible: false });
 }
 
 function registerIPC() {
   ipcMain.handle('instances:list', () => db.listInstances());
-  ipcMain.handle('instances:create', (_, name) => db.createInstance(name));
+  ipcMain.handle('instances:create', (_, name) => {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) throw new Error('实例名称不能为空');
+    const result = db.createInstance(cleanName);
+    return { id: Number(result.lastInsertRowid), name: cleanName };
+  });
+  ipcMain.handle('instances:updateName', (_, data) => db.updateInstanceName(data.id, data.name));
+  ipcMain.handle('instances:summary', (_, id) => db.getInstanceSummary(id));
+  ipcMain.handle('instances:delete', async (_, id) => {
+    const instanceId = Number(id);
+    if (schedulerIsBusy(instanceId)) {
+      throw new Error('该实例的发布队列正在运行，请先停止队列后再删除实例');
+    }
+    const summary = db.getInstanceSummary(instanceId);
+    if (Number(summary.running_task_count) > 0) {
+      throw new Error('该实例仍有正在发布的任务，请等待任务完成后再删除实例');
+    }
+    await browserManager.destroyInstance(instanceId);
+    return db.deleteInstance(instanceId);
+  });
 
   ipcMain.handle('channels:list', (_, instanceId) => db.listChannels(instanceId));
   ipcMain.handle('channels:add', (_, data) => db.addChannel(data.instanceId, data.name, data.url));
+  ipcMain.handle('channels:updateName', (_, data) => db.updateChannelName(data.id, data.name));
   ipcMain.handle('channels:delete', (_, id) => db.deleteChannel(id));
 
-  ipcMain.handle('tasks:list', (_, instanceId) => db.listTasks(instanceId));
+  ipcMain.handle('tasks:list', (_, data) => db.listTasks(data.instanceId, data.page, data.pageSize));
+  ipcMain.handle('tasks:pendingSummary', (_, instanceId) => db.getPendingTaskSummary(instanceId));
   ipcMain.handle('tasks:create', (_, data) => db.createTask(
     data.instanceId,
     data.title,
     data.body,
     data.mediaPath,
     data.channelIds,
-    data.mediaType
+    data.mediaType,
+    data.scheduledAt,
+    data.intervalMinSeconds,
+    data.intervalMaxSeconds
   ));
+  ipcMain.handle('tasks:deleteMany', (_, taskIds) => db.deleteTasks(taskIds));
   ipcMain.handle('tasks:run', async (_, taskId) => {
     const task = db.getTask(taskId);
     if (!task) throw new Error('任务不存在');
@@ -87,7 +115,7 @@ function registerIPC() {
       throw new Error(`任务 #${task.id} 已经全部发布成功，没有需要再次执行的目标频道`);
     }
 
-    await showPublishingBrowser(task.instance_id);
+    await hidePublishingBrowser(task.instance_id);
     return browserManager.publishTask(task);
   });
 
@@ -105,17 +133,17 @@ function registerIPC() {
 
     db.resetFailedTargets(taskId);
     const task = db.getTask(taskId);
-    await showPublishingBrowser(task.instance_id);
+    await hidePublishingBrowser(task.instance_id);
     return browserManager.publishTask(task);
   });
 
   ipcMain.handle('scheduler:start', async (_, instanceId) => {
-    await showPublishingBrowser(instanceId);
+    await hidePublishingBrowser(instanceId);
     return scheduler.start(instanceId);
   });
   ipcMain.handle('scheduler:pause', (_, instanceId) => scheduler.pause(instanceId));
   ipcMain.handle('scheduler:resume', async (_, instanceId) => {
-    await showPublishingBrowser(instanceId);
+    await hidePublishingBrowser(instanceId);
     return scheduler.resume(instanceId);
   });
   ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(instanceId));

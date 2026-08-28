@@ -53,14 +53,14 @@
 - 默认实例。
 - 新建实例。
 - 切换实例。
-- 不同实例的数据隔离基础。
-- 每实例独立 Chromium Profile。
+- 重命名实例。
+- 删除实例，并级联清理该实例的频道、任务和任务目标。
+- 不同实例的频道与任务数据隔离。
+- 所有实例共用一个 QQ 登录状态。
 - 每实例独立发布队列 worker。
 
 待完善：
 
-- 重命名实例。
-- 删除实例。
 - 实例详情。
 - 每个实例单独保存全部发布参数。
 - 多实例并发运行状态总览。
@@ -73,7 +73,7 @@
 
 - Playwright Chromium。
 - `launchPersistentContext`。
-- 每个实例独立 `profiles/<instanceId>`。
+- 全局共用持久登录 Session 和加密登录备份。
 - 打开 `https://pd.qq.com/`。
 - Cookie / LocalStorage / IndexedDB 等浏览器 Profile 持久化。
 - 根据真实页面 `.app-login .user-info .name` / `.app-login .user-card .name` 检测已登录账号。
@@ -458,7 +458,7 @@ templates
 
 ```text
 v0.1
-基础 Electron + Playwright + SQLite Demo
+基础 Electron + Playwright + SQLite 
         ↓
 v0.2
 真实 DOM + ProseMirror + 登录检测 + 上传等待 + 成功判断 + 自动重试 + 错误截图

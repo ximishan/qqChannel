@@ -89,9 +89,11 @@ class TaskScheduler {
     return this.getState(instanceId);
   }
 
-  randomIntervalMs() {
-    let min = Number(this.db.getSetting('interval_min_seconds', '180'));
-    let max = Number(this.db.getSetting('interval_max_seconds', '480'));
+  randomIntervalMs(task = null) {
+    let min = task?.interval_min_seconds;
+    let max = task?.interval_max_seconds;
+    if (min == null) min = Number(this.db.getSetting('interval_min_seconds', '180'));
+    if (max == null) max = Number(this.db.getSetting('interval_max_seconds', '480'));
     if (!Number.isFinite(min)) min = 180;
     if (!Number.isFinite(max)) max = 480;
     min = Math.max(0, Math.floor(min));
@@ -99,6 +101,40 @@ class TaskScheduler {
     if (max < min) [min, max] = [max, min];
     const seconds = min === max ? min : Math.floor(Math.random() * (max - min + 1)) + min;
     return seconds * 1000;
+  }
+
+  async waitForScheduledTask(state, scheduledAt) {
+    let end = Date.parse(scheduledAt);
+    if (!Number.isFinite(end)) return true;
+    state.nextRunAt = end;
+    state.status = 'waiting';
+
+    while (Date.now() < end) {
+      if (state.stopRequested || state.status === 'stopped') return false;
+
+      while (state.status === 'paused') {
+        if (state.stopRequested || state.status === 'stopped') return false;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      if (this.db.getNextPendingTask(state.instanceId)) {
+        state.nextRunAt = null;
+        state.status = 'running';
+        return true;
+      }
+
+      const latestScheduledAt = this.db.getNextScheduledAt(state.instanceId);
+      const latestEnd = Date.parse(latestScheduledAt);
+      if (Number.isFinite(latestEnd) && latestEnd !== end) {
+        end = latestEnd;
+        state.nextRunAt = end;
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.min(500, Math.max(1, end - Date.now()))));
+    }
+
+    state.nextRunAt = null;
+    state.status = 'running';
+    return true;
   }
 
   async sleepInterruptible(state, ms) {
@@ -138,6 +174,14 @@ class TaskScheduler {
 
         const task = this.db.getNextPendingTask(state.instanceId);
         if (!task) {
+          const pending = this.db.countPendingTasks(state.instanceId);
+          const nextScheduledAt = pending > 0 ? this.db.getNextScheduledAt(state.instanceId) : null;
+          if (nextScheduledAt) {
+            const readable = new Date(nextScheduledAt).toLocaleString('zh-CN', { hour12: false });
+            this.db.log('info', `实例 #${state.instanceId} 等待计划任务，开始时间：${readable}`);
+            if (!(await this.waitForScheduledTask(state, nextScheduledAt))) break;
+            continue;
+          }
           this.db.log('info', `实例 #${state.instanceId} 没有待发布任务，队列结束`);
           state.status = 'idle';
           return;
@@ -179,7 +223,7 @@ class TaskScheduler {
           return;
         }
 
-        const waitMs = this.randomIntervalMs();
+        const waitMs = this.randomIntervalMs(task);
         this.db.log('info', `实例 #${state.instanceId} 下一条任务等待 ${Math.round(waitMs / 1000)} 秒`);
         const ok = await this.sleepInterruptible(state, waitMs);
         if (!ok) break;

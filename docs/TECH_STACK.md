@@ -37,7 +37,7 @@
 
 - 启动 Chromium。
 - `launchPersistentContext` 持久化登录态。
-- 每个实例使用独立 Chromium Profile。
+- 所有实例共用一个持久 Chromium Session；实例只负责分组频道和任务。
 - 打开腾讯频道。
 - 定位发帖区域。
 - 上传图片/视频。
@@ -104,7 +104,7 @@ https://pd.qq.com/
 
 ## 4. 实例与登录态设计
 
-一个实例代表一套独立运行环境。
+一个实例代表一组频道及其发布任务，与 QQ 账号无关。一个实例可以分配多个频道，所有实例共用同一个 QQ 登录状态。
 
 建议目录结构：
 
@@ -112,9 +112,7 @@ https://pd.qq.com/
 Electron userData/
 ├─ publisher.db
 ├─ profiles/
-│  ├─ 1/
-│  ├─ 2/
-│  └─ 3/
+│  └─ 1/       # 全局登录备份，沿用历史目录以兼容已有登录
 ├─ logs/
 └─ screenshots/
 ```
@@ -125,15 +123,13 @@ Playwright 使用：
 chromium.launchPersistentContext(profilePath, options)
 ```
 
-因此不同实例之间的以下数据相互隔离：
+不同实例之间仅隔离本地业务数据：
 
-- Cookie
-- LocalStorage
-- IndexedDB
-- 登录状态
-- 腾讯频道相关网页缓存
+- 频道配置
+- 发布任务
+- 任务目标及执行状态
 
-目标效果：扫码登录一次，关闭软件重新打开后仍能继续使用该实例的登录状态；如果腾讯侧主动让登录失效，则需要重新扫码。
+Cookie、LocalStorage、IndexedDB、登录状态和腾讯频道网页缓存全局共用。目标效果是扫码登录一次后可操作所有实例；关闭软件重新打开仍可继续使用，如果腾讯侧主动让登录失效，则重新扫码一次即可。
 
 ---
 

@@ -1,10 +1,18 @@
 let currentInstanceId = null;
 let selectedTaskId = null;
+const selectedTaskIds = new Set();
 let schedulerTimer = null;
 let batchVideoFiles = [];
 let activeTab = 'tasks';
 let browserResizeTimer = null;
 let lastRenderedTaskSnapshot = '';
+let taskRows = [];
+let taskPage = 1;
+let taskPageSize = 10;
+let taskTotalPages = 1;
+let runtimeSettings = {};
+let channelRows = [];
+let instanceRows = [];
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -35,11 +43,41 @@ async function activateTab(tabName) {
 
 async function loadInstances() {
   const rows = await window.api.listInstances();
+  instanceRows = rows;
   const sel = $('#instanceSelect');
   sel.innerHTML = rows.map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
-  if (!currentInstanceId && rows.length) currentInstanceId = rows[0].id;
-  sel.value = currentInstanceId;
-  currentInstanceId = Number(sel.value);
+  if (!rows.some(row => Number(row.id) === Number(currentInstanceId))) {
+    currentInstanceId = rows.length ? Number(rows[0].id) : null;
+  }
+  if (currentInstanceId) sel.value = String(currentInstanceId);
+
+  const channelInstanceSelect = $('#channelInstanceSelect');
+  channelInstanceSelect.innerHTML = rows.map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+  if (currentInstanceId) channelInstanceSelect.value = String(currentInstanceId);
+
+  const hasInstance = Boolean(currentInstanceId);
+  $('#btnManageInstance').disabled = !hasInstance;
+  $('#btnLogin').disabled = !hasInstance;
+  $('#btnCheckLogin').disabled = !hasInstance;
+  $('#btnAddChannel').disabled = !hasInstance;
+  channelInstanceSelect.disabled = !hasInstance;
+  if (!hasInstance) {
+    channelRows = [];
+    taskRows = [];
+    selectedTaskIds.clear();
+    $('#channelList').innerHTML = '<div class="hint">请先新建实例，再向实例分配频道。</div>';
+    $('#taskChannelList').innerHTML = '<div class="hint">请先新建实例并添加频道。</div>';
+    $('#batchChannelList').innerHTML = '<div class="hint">请先新建实例并添加频道。</div>';
+    $('#taskBody').innerHTML = '<tr><td colspan="10" class="hint">请先新建实例。</td></tr>';
+    $('#taskPageInfo').textContent = '第 1 / 1 页，共 0 条';
+    $('#loginStatus').textContent = '登录状态：请先新建实例';
+    $('#queueStatus').textContent = '队列：idle';
+    $('#currentChannelInstanceTitle').textContent = '当前实例频道';
+    $('#channelSaveResult').textContent = '';
+    await Promise.all([loadSelectors(), loadSettings(), loadLogs()]);
+    return;
+  }
+
   await refreshAll();
   await checkLoginStatus(false);
   await refreshSchedulerState();
@@ -52,12 +90,15 @@ async function refreshAll() {
 
 async function loadChannels() {
   if (!currentInstanceId) return;
+  const instance = instanceRows.find(item => Number(item.id) === Number(currentInstanceId));
+  $('#currentChannelInstanceTitle').textContent = instance ? `实例“${instance.name}”的频道` : '当前实例频道';
   const rows = await window.api.listChannels(currentInstanceId);
+  channelRows = rows;
   $('#channelList').innerHTML = rows.length ? rows.map(c => `
     <div class="channel-item">
       <strong>${escapeHtml(c.name)}</strong>
       <div class="channel-url">${escapeHtml(c.url)}</div>
-      <button onclick="deleteChannel(${c.id})">删除</button>
+      <div class="channel-actions"><button onclick="editChannelName(${c.id})">改名</button><button onclick="deleteChannel(${c.id})">删除</button></div>
     </div>`).join('') : '<div class="hint">当前实例还没有频道。</div>';
 
   const options = rows.length ? rows.map(c => `
@@ -68,33 +109,56 @@ async function loadChannels() {
 
   $('#taskChannelList').innerHTML = options;
   $('#batchChannelList').innerHTML = options;
+  $$('#taskChannelList input[type="checkbox"]').forEach(input => {
+    input.addEventListener('change', updateTaskTargetSummary);
+  });
+  updateTaskTargetSummary();
 }
 
 async function loadTasks(force = false) {
   if (!currentInstanceId) return;
-  const rows = await window.api.listTasks(currentInstanceId);
+  const result = await window.api.listTasks({ instanceId: currentInstanceId, page: taskPage, pageSize: taskPageSize });
+  const rows = result.items || [];
+  taskPage = result.page || 1;
+  taskTotalPages = result.totalPages || 1;
+  taskRows = rows;
+  $('#taskPageInfo').textContent = `第 ${taskPage} / ${taskTotalPages} 页，共 ${result.total || 0} 条`;
+  $('#btnTaskPrev').disabled = taskPage <= 1;
+  $('#btnTaskNext').disabled = taskPage >= taskTotalPages;
   const snapshot = JSON.stringify(rows.map(t => [
     t.id,
     t.status,
     t.finished_at,
+    t.scheduled_at,
+    t.interval_min_seconds,
+    t.interval_max_seconds,
     ...(t.targets || []).map(x => `${x.id}:${x.status}:${x.retry_count || 0}:${x.last_error || ''}`)
   ]));
-  if (!force && snapshot === lastRenderedTaskSnapshot) return;
-  lastRenderedTaskSnapshot = snapshot;
+  const pageSnapshot = `${taskPage}:${taskPageSize}:${result.total}:${snapshot}`;
+  if (!force && pageSnapshot === lastRenderedTaskSnapshot) return;
+  lastRenderedTaskSnapshot = pageSnapshot;
 
   $('#taskBody').innerHTML = rows.length ? rows.map(t => `
     <tr>
-      <td><input type="radio" name="taskSel" value="${t.id}" ${selectedTaskId === t.id ? 'checked' : ''}></td>
+      <td><input type="checkbox" class="task-row-select" value="${t.id}" ${selectedTaskIds.has(t.id) ? 'checked' : ''}></td>
       <td>${t.id}</td>
       <td>${escapeHtml(t.title || '(无标题)')}</td>
+      <td class="comment-cell" title="${escapeAttr(t.body || '')}">${escapeHtml(shortText(t.body || '—', 36))}</td>
       <td title="${escapeHtml(t.media_path)}">${t.media_type === 'text' ? '—' : escapeHtml(fileName(t.media_path))}</td>
-      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}${x.last_error ? ` - ${x.last_error}` : ''}`).join('\n'))}">${escapeHtml(t.targets.map(x => x.channel_name).join('、'))}</td>
+      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}${x.last_error ? ` - ${x.last_error}` : ''}`).join('\n'))}"><div class="target-status-list">${renderTargetChips(t.targets)}</div></td>
       <td>${t.media_type === 'text' ? '文本' : (t.media_type === 'image' ? '图片' : '视频')}</td>
       <td class="status-${t.status}">${escapeHtml(t.status)}</td>
+      <td>${t.scheduled_at ? escapeHtml(formatDateTime(t.scheduled_at)) : '立即'}</td>
       <td>${escapeHtml(t.created_at)}</td>
-    </tr>`).join('') : '<tr><td colspan="8" class="hint">暂无任务。点击“新建发布任务”创建纯文本、图片或视频任务。</td></tr>';
+    </tr>`).join('') : '<tr><td colspan="10" class="hint">暂无任务。点击“新建发布任务”创建纯文本、图片或视频任务。</td></tr>';
 
-  $$('input[name="taskSel"]').forEach(r => r.addEventListener('change', () => selectedTaskId = Number(r.value)));
+  $$('.task-row-select').forEach(input => input.addEventListener('change', () => {
+    const id = Number(input.value);
+    if (input.checked) selectedTaskIds.add(id);
+    else selectedTaskIds.delete(id);
+    updateTaskSelectionUi();
+  }));
+  updateTaskSelectionUi();
 }
 
 async function loadSelectors() {
@@ -111,11 +175,13 @@ async function loadSelectors() {
 async function loadSettings() {
   const rows = await window.api.listSettings();
   const map = Object.fromEntries(rows.map(x => [x.key, x.value]));
+  runtimeSettings = map;
   if ($('#setting_max_retries')) $('#setting_max_retries').value = map.max_retries ?? '2';
   if ($('#setting_upload_timeout_ms')) $('#setting_upload_timeout_ms').value = map.upload_timeout_ms ?? '120000';
   if ($('#setting_publish_verify_timeout_ms')) $('#setting_publish_verify_timeout_ms').value = map.publish_verify_timeout_ms ?? '20000';
   if ($('#setting_interval_min_seconds')) $('#setting_interval_min_seconds').value = map.interval_min_seconds ?? '180';
   if ($('#setting_interval_max_seconds')) $('#setting_interval_max_seconds').value = map.interval_max_seconds ?? '480';
+  if ($('#setting_target_interval_seconds')) $('#setting_target_interval_seconds').value = map.target_interval_seconds ?? '70';
   if ($('#setting_screenshot_on_error')) $('#setting_screenshot_on_error').value = map.screenshot_on_error ?? '1';
 }
 
@@ -196,9 +262,42 @@ window.deleteChannel = async (id) => {
   await loadChannels();
 };
 
+window.editChannelName = (id) => {
+  const channel = channelRows.find(item => item.id === Number(id));
+  if (!channel) return alert('频道不存在，请刷新后重试');
+  $('#channelEditId').value = channel.id;
+  $('#channelEditName').value = channel.name;
+  $('#channelEditDialog').showModal();
+  setTimeout(() => $('#channelEditName').select(), 0);
+};
+
+$('#btnCloseChannelEdit').addEventListener('click', () => $('#channelEditDialog').close());
+$('#btnCancelChannelEdit').addEventListener('click', () => $('#channelEditDialog').close());
+$('#channelEditForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const id = Number($('#channelEditId').value);
+  const name = $('#channelEditName').value.trim();
+  if (!id || !name) return alert('频道名称不能为空');
+  const button = $('#btnSaveChannelEdit');
+  button.disabled = true;
+  try {
+    await window.api.updateChannelName({ id, name });
+    $('#channelEditDialog').close();
+    await Promise.all([loadChannels(), loadTasks(true)]);
+  } catch (error) {
+    alert(String(error?.message || error));
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $('#instanceSelect').addEventListener('change', async (e) => {
   currentInstanceId = Number(e.target.value);
+  $('#channelInstanceSelect').value = String(currentInstanceId);
+  $('#channelSaveResult').textContent = '';
+  selectedTaskIds.clear();
   selectedTaskId = null;
+  taskPage = 1;
   lastRenderedTaskSnapshot = '';
   await refreshAll();
   await checkLoginStatus(false);
@@ -207,12 +306,87 @@ $('#instanceSelect').addEventListener('change', async (e) => {
 });
 
 $('#btnNewInstance').addEventListener('click', async () => {
-  const name = prompt('实例名称：', `实例 ${Date.now().toString().slice(-4)}`);
-  if (!name) return;
-  await window.api.createInstance(name);
-  currentInstanceId = null;
-  lastRenderedTaskSnapshot = '';
-  await loadInstances();
+  $('#instanceForm').dataset.mode = 'create';
+  $('#instanceDialogTitle').textContent = '新建实例';
+  $('#instanceDialogDescription').textContent = '实例用于分组管理频道；QQ 登录状态由所有实例共用。';
+  $('#instanceName').value = `实例 ${Date.now().toString().slice(-4)}`;
+  $('#btnSaveInstance').textContent = '创建实例';
+  $('#btnDeleteInstance').classList.add('hidden');
+  $('#instanceDialog').showModal();
+  setTimeout(() => $('#instanceName').select(), 0);
+});
+
+$('#btnManageInstance').addEventListener('click', () => {
+  const instance = instanceRows.find(item => Number(item.id) === Number(currentInstanceId));
+  if (!instance) return alert('请先选择实例');
+  $('#instanceForm').dataset.mode = 'edit';
+  $('#instanceDialogTitle').textContent = '管理实例';
+  $('#instanceDialogDescription').textContent = '实例只用于分组频道，与 QQ 账号无关；所有实例共用同一登录状态。';
+  $('#instanceName').value = instance.name;
+  $('#btnSaveInstance').textContent = '保存名称';
+  $('#btnDeleteInstance').classList.remove('hidden');
+  $('#instanceDialog').showModal();
+  setTimeout(() => $('#instanceName').select(), 0);
+});
+
+$('#btnCloseInstance').addEventListener('click', () => $('#instanceDialog').close());
+$('#btnCancelInstance').addEventListener('click', () => $('#instanceDialog').close());
+$('#instanceForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = $('#instanceName').value.trim();
+  if (!name) return alert('实例名称不能为空');
+
+  const button = $('#btnSaveInstance');
+  button.disabled = true;
+  try {
+    if ($('#instanceForm').dataset.mode === 'edit') {
+      await window.api.updateInstanceName({ id: currentInstanceId, name });
+    } else {
+      const created = await window.api.createInstance(name);
+      currentInstanceId = Number(created.id);
+    }
+    selectedTaskIds.clear();
+    selectedTaskId = null;
+    taskPage = 1;
+    lastRenderedTaskSnapshot = '';
+    $('#instanceDialog').close();
+    await loadInstances();
+  } catch (error) {
+    alert(String(error?.message || error));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#btnDeleteInstance').addEventListener('click', async () => {
+  if (!currentInstanceId) return;
+  const summary = await window.api.getInstanceSummary(currentInstanceId).catch(error => {
+    alert(String(error?.message || error));
+    return null;
+  });
+  if (!summary) return;
+
+  const message = `确定删除实例“${summary.name}”吗？\n\n将同时删除：\n- ${summary.channel_count} 个频道配置\n- ${summary.task_count} 条本地发布任务\n\n不会退出 QQ，也不会影响其他实例及腾讯频道中已经发布的内容。`;
+  if (!confirm(message)) return;
+
+  const button = $('#btnDeleteInstance');
+  button.disabled = true;
+  try {
+    const deleted = await window.api.deleteInstance(currentInstanceId);
+    $('#instanceDialog').close();
+    currentInstanceId = null;
+    selectedTaskIds.clear();
+    selectedTaskId = null;
+    taskPage = 1;
+    lastRenderedTaskSnapshot = '';
+    await loadInstances();
+    await syncBrowserView();
+    alert(`已删除实例“${deleted.name}”，同时删除 ${deleted.deletedChannels} 个频道配置和 ${deleted.deletedTasks} 条本地任务。QQ 登录状态未受影响。`);
+  } catch (error) {
+    alert(String(error?.message || error));
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $('#btnLogin').addEventListener('click', async () => {
@@ -234,6 +408,10 @@ $('#btnBrowserHome').addEventListener('click', () => window.api.browserHome(curr
 $('#btnQueueStart').addEventListener('click', async () => {
   const status = await window.api.getLoginStatus(currentInstanceId).catch(() => ({loggedIn:false}));
   if (!status.loggedIn) return alert('请先登录 QQ，再启动发布队列');
+  const summary = await window.api.getPendingTaskSummary(currentInstanceId);
+  if (!summary.taskCount) return alert('当前没有待发布任务');
+  if (!confirm(`将在工具后台启动 ${summary.taskCount} 条任务，发布到：\n\n${formatChannelList(summary.channels)}\n\n内置浏览器不会覆盖任务列表，是否继续？`)) return;
+  await activateTab('tasks');
   await window.api.schedulerStart(currentInstanceId);
   await refreshSchedulerState();
 });
@@ -246,6 +424,7 @@ $('#btnQueuePause').addEventListener('click', async () => {
 $('#btnQueueResume').addEventListener('click', async () => {
   const status = await window.api.getLoginStatus(currentInstanceId).catch(() => ({loggedIn:false}));
   if (!status.loggedIn) return alert('当前 QQ 未登录，重新登录后再继续');
+  await activateTab('tasks');
   await window.api.schedulerResume(currentInstanceId);
   await refreshSchedulerState();
 });
@@ -256,14 +435,32 @@ $('#btnQueueStop').addEventListener('click', async () => {
 });
 
 $('#btnAddChannel').addEventListener('click', async () => {
+  const instanceId = Number($('#channelInstanceSelect').value);
   const name = $('#channelName').value.trim();
   const url = $('#channelUrl').value.trim();
+  if (!instanceId || !instanceRows.some(item => Number(item.id) === instanceId)) return alert('请先选择频道所属实例');
   if (!name || !url) return alert('频道名称和URL不能为空');
   if (!/^https:\/\/pd\.qq\.com\/g\//i.test(url)) return alert('请输入有效的腾讯频道 URL，例如 https://pd.qq.com/g/xxxx');
-  await window.api.addChannel({ instanceId: currentInstanceId, name, url });
-  $('#channelName').value = '';
-  $('#channelUrl').value = '';
-  await loadChannels();
+  const button = $('#btnAddChannel');
+  button.disabled = true;
+  try {
+    await window.api.addChannel({ instanceId, name, url });
+    const instance = instanceRows.find(item => Number(item.id) === instanceId);
+    currentInstanceId = instanceId;
+    selectedTaskIds.clear();
+    selectedTaskId = null;
+    taskPage = 1;
+    lastRenderedTaskSnapshot = '';
+    $('#channelName').value = '';
+    $('#channelUrl').value = '';
+    await loadInstances();
+    $('#channelSaveResult').textContent = `频道“${name}”已绑定到实例“${instance?.name || instanceId}”。`;
+    await syncBrowserView();
+  } catch (error) {
+    alert(String(error?.message || error));
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $('#btnRefreshChannels').onclick = loadChannels;
@@ -273,6 +470,11 @@ $('#btnCreateTask').addEventListener('click', () => {
   $('#taskMediaType').value = 'text';
   $('#taskMediaRow').classList.add('hidden');
   $('#mediaPath').value = '';
+  $('#taskStartTime').value = '';
+  $('#taskIntervalMin').value = runtimeSettings.interval_min_seconds ?? '180';
+  $('#taskIntervalMax').value = runtimeSettings.interval_max_seconds ?? '480';
+  $$('#taskChannelList input[type="checkbox"]').forEach(input => { input.checked = false; });
+  updateTaskTargetSummary();
   $('#taskDialog').showModal();
 });
 
@@ -316,6 +518,7 @@ $('#btnPickVideoFolder').addEventListener('click', async () => {
 
 $('#btnSelectAll').addEventListener('click', () => {
   $$('#taskChannelList input[type="checkbox"]').forEach(x => x.checked = true);
+  updateTaskTargetSummary();
 });
 
 $('#btnBatchSelectAll').addEventListener('click', () => {
@@ -327,19 +530,36 @@ $('#btnSaveTask').addEventListener('click', async () => {
   const mediaPath = $('#mediaPath').value.trim();
   const title = $('#taskTitle').value.trim();
   const body = $('#taskBodyText').value.trim();
+  const startTimeValue = $('#taskStartTime').value;
+  let intervalMinSeconds = Number($('#taskIntervalMin').value || 0);
+  let intervalMaxSeconds = Number($('#taskIntervalMax').value || 0);
   const channelIds = $$('#taskChannelList input[type="checkbox"]:checked').map(x => Number(x.value));
   if (mediaType === 'image' && !mediaPath) return alert('请选择图片');
   if (mediaType === 'video' && !mediaPath) return alert('请选择视频');
   if (!channelIds.length) return alert('至少选择一个频道');
+  if (!Number.isFinite(intervalMinSeconds) || !Number.isFinite(intervalMaxSeconds) || intervalMinSeconds < 0 || intervalMaxSeconds < 0) return alert('随机间隔必须是大于或等于 0 的秒数');
+  if (intervalMaxSeconds < intervalMinSeconds) [intervalMinSeconds, intervalMaxSeconds] = [intervalMaxSeconds, intervalMinSeconds];
+  const scheduledAt = startTimeValue ? new Date(startTimeValue).toISOString() : null;
   if (!body && !title) {
-    if (mediaType === 'text') return alert('纯文本任务必须填写正文或标题');
-    if (!confirm(`当前任务没有填写正文/标题，只发布${mediaType === 'image' ? '图片' : '视频'}，是否继续？`)) return;
+    if (mediaType === 'text') return alert('纯文本任务必须填写评论或标题');
+    if (!confirm(`当前任务没有填写评论/标题，只发布${mediaType === 'image' ? '图片' : '视频'}，是否继续？`)) return;
   }
-  await window.api.createTask({ instanceId: currentInstanceId, title, body: body || title, mediaPath, mediaType, channelIds });
+  await window.api.createTask({
+    instanceId: currentInstanceId,
+    title,
+    body: body || title,
+    mediaPath,
+    mediaType,
+    channelIds,
+    scheduledAt,
+    intervalMinSeconds,
+    intervalMaxSeconds
+  });
   $('#taskDialog').close();
   $('#mediaPath').value = '';
   $('#taskTitle').value = '';
   $('#taskBodyText').value = '';
+  taskPage = 1;
   await loadTasks(true);
   await refreshSchedulerState();
 });
@@ -384,10 +604,17 @@ $('#btnCreateBatchTasks').addEventListener('click', async () => {
 });
 
 $('#btnRunTask').addEventListener('click', async () => {
-  if (!selectedTaskId) return alert('请先选择一条任务');
-  if (!confirm(`执行任务 #${selectedTaskId}？\n\n这会绕过队列间隔，立即真实尝试发表。`)) return;
+  if (selectedTaskIds.size !== 1) return alert('执行任务时请只选择一条任务');
+  selectedTaskId = [...selectedTaskIds][0];
+  const task = taskRows.find(row => row.id === selectedTaskId);
+  if (!task) return alert('要执行的任务不在当前页，请回到该任务所在页后操作');
+  const targets = task?.targets?.filter(target => target.status !== 'success') || [];
+  if (!targets.length) return alert('该任务没有需要发布的目标频道');
+  if (!confirm(`任务 #${selectedTaskId} 将在工具后台发布到以下频道：\n\n${formatChannelList(targets.map(target => target.channel_name))}\n\n多频道会按顺序逐个发布，是否继续？`)) return;
   try {
-    await window.api.runTask(selectedTaskId);
+    await activateTab('tasks');
+    const result = await window.api.runTask(selectedTaskId);
+    renderPublishResult(result);
   } catch (e) {
     alert(String(e?.message || e));
   }
@@ -397,10 +624,17 @@ $('#btnRunTask').addEventListener('click', async () => {
 });
 
 $('#btnRetryTask').addEventListener('click', async () => {
-  if (!selectedTaskId) return alert('请先选择一条任务');
-  if (!confirm(`只重新执行任务 #${selectedTaskId} 中失败的目标频道？`)) return;
+  if (selectedTaskIds.size !== 1) return alert('重试任务时请只选择一条任务');
+  selectedTaskId = [...selectedTaskIds][0];
+  const task = taskRows.find(row => row.id === selectedTaskId);
+  if (!task) return alert('要重试的任务不在当前页，请回到该任务所在页后操作');
+  const failedTargets = task?.targets?.filter(target => target.status === 'failed') || [];
+  if (!failedTargets.length) return alert('该任务没有失败的目标频道');
+  if (!confirm(`只重新发布到以下失败频道：\n\n${formatChannelList(failedTargets.map(target => target.channel_name))}\n\n是否继续？`)) return;
   try {
-    await window.api.retryFailedTask(selectedTaskId);
+    await activateTab('tasks');
+    const result = await window.api.retryFailedTask(selectedTaskId);
+    renderPublishResult(result);
   } catch (e) {
     alert(String(e?.message || e));
   }
@@ -408,13 +642,59 @@ $('#btnRetryTask').addEventListener('click', async () => {
   await loadLogs();
 });
 
+$('#btnDeleteTask').addEventListener('click', async () => {
+  const ids = [...selectedTaskIds];
+  if (!ids.length) return alert('请先选择要删除的任务');
+  if (!confirm(`确定删除选中的 ${ids.length} 条任务？\n\n成功、失败和待发布任务都会从工具中删除；正在发布的任务会自动跳过。不会删除腾讯频道中已经发布的内容。`)) return;
+  const result = await window.api.deleteTasks(ids);
+  selectedTaskIds.clear();
+  selectedTaskId = null;
+  await loadTasks(true);
+  await refreshSchedulerState();
+  alert(`已删除 ${result.deletedCount || 0} 条任务${result.skippedRunningCount ? `，跳过 ${result.skippedRunningCount} 条正在发布的任务` : ''}`);
+});
+
+$('#btnTaskPrev').addEventListener('click', async () => {
+  if (taskPage <= 1) return;
+  taskPage -= 1;
+  lastRenderedTaskSnapshot = '';
+  await loadTasks(true);
+});
+
+$('#btnTaskNext').addEventListener('click', async () => {
+  if (taskPage >= taskTotalPages) return;
+  taskPage += 1;
+  lastRenderedTaskSnapshot = '';
+  await loadTasks(true);
+});
+
+$('#taskPageSize').addEventListener('change', async (event) => {
+  taskPageSize = Number(event.target.value) || 10;
+  taskPage = 1;
+  lastRenderedTaskSnapshot = '';
+  await loadTasks(true);
+});
+
+$('#taskSelectAll').addEventListener('change', (event) => {
+  for (const task of taskRows) {
+    if (event.target.checked) selectedTaskIds.add(task.id);
+    else selectedTaskIds.delete(task.id);
+  }
+  $$('.task-row-select').forEach(input => { input.checked = event.target.checked; });
+  updateTaskSelectionUi();
+});
+
 $('#btnSaveRuntimeSettings').addEventListener('click', async () => {
   let minSec = Number($('#setting_interval_min_seconds').value || 0);
   let maxSec = Number($('#setting_interval_max_seconds').value || 0);
+  let targetSec = Number($('#setting_target_interval_seconds').value || 0);
   if (minSec < 0 || maxSec < 0) return alert('随机间隔不能小于 0 秒');
+  if (!Number.isFinite(targetSec) || targetSec < 0) return alert('同一任务的频道间隔不能小于 0 秒');
   if (maxSec < minSec) [minSec, maxSec] = [maxSec, minSec];
+  targetSec = Math.floor(targetSec);
   $('#setting_interval_min_seconds').value = minSec;
   $('#setting_interval_max_seconds').value = maxSec;
+  $('#setting_target_interval_seconds').value = targetSec;
 
   const items = [
     ['max_retries', $('#setting_max_retries').value],
@@ -422,6 +702,7 @@ $('#btnSaveRuntimeSettings').addEventListener('click', async () => {
     ['publish_verify_timeout_ms', $('#setting_publish_verify_timeout_ms').value],
     ['interval_min_seconds', String(minSec)],
     ['interval_max_seconds', String(maxSec)],
+    ['target_interval_seconds', String(targetSec)],
     ['screenshot_on_error', $('#setting_screenshot_on_error').value]
   ];
   for (const [key, value] of items) await window.api.setSetting({ key, value });
@@ -449,6 +730,26 @@ window.addEventListener('resize', () => {
 });
 
 function fileName(p) { return String(p || '').split(/[\\/]/).pop(); }
+function shortText(value, maxLength) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
+}
+function formatDateTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString('zh-CN', { hour12: false });
+}
+function updateTaskSelectionUi() {
+  const visibleIds = taskRows.map(task => task.id);
+  const selectedVisibleCount = visibleIds.filter(id => selectedTaskIds.has(id)).length;
+  const selectAll = $('#taskSelectAll');
+  if (selectAll) {
+    selectAll.checked = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+    selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleIds.length;
+  }
+  selectedTaskId = selectedTaskIds.size === 1 ? [...selectedTaskIds][0] : null;
+  const info = $('#taskSelectionInfo');
+  if (info) info.textContent = `已选 ${selectedTaskIds.size} 条`;
+}
 function fileStem(p) {
   const name = fileName(p);
   const i = name.lastIndexOf('.');
@@ -456,5 +757,75 @@ function fileStem(p) {
 }
 function escapeHtml(s='') { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s='') { return escapeHtml(s); }
+
+function targetStatusLabel(status) {
+  return ({ pending: '待发', running: '发布中', success: '成功', failed: '失败' })[status] || status || '未知';
+}
+
+function renderTargetChips(targets = []) {
+  return targets.map(target => `
+    <span class="target-status-chip ${escapeAttr(target.status)}">
+      ${escapeHtml(target.channel_name)} · ${escapeHtml(targetStatusLabel(target.status))}
+    </span>`).join('');
+}
+
+function formatChannelList(names = []) {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, 20).map((name, index) => `${index + 1}. ${name}`).join('\n');
+  if (!shown) return '（无）';
+  return unique.length > 20 ? `${shown}\n……另有 ${unique.length - 20} 个频道` : shown;
+}
+
+function updateTaskTargetSummary() {
+  const summary = $('#taskTargetSummary');
+  if (!summary) return;
+  const count = $$('#taskChannelList input[type="checkbox"]:checked').length;
+  summary.textContent = `已选 ${count} 个`;
+}
+
+function showPublishProgress(content, state = '') {
+  const progress = $('#publishProgress');
+  if (!progress) return;
+  progress.className = `publish-progress${state ? ` ${state}` : ''}`;
+  progress.innerHTML = content;
+}
+
+function renderPublishResult(result = {}) {
+  const targets = result.targets || [];
+  const success = Boolean(result.success);
+  const summary = success
+    ? `任务 #${result.taskId} 发布完成：成功 ${result.successCount || 0} 个频道`
+    : `任务 #${result.taskId} 发布结束：成功 ${result.successCount || 0} 个，失败 ${result.failedCount || 0} 个频道`;
+  const chips = targets.length
+    ? `<div class="target-status-list publish-result-targets">${renderTargetChips(targets.map(target => ({
+        channel_name: target.channelName,
+        status: target.status
+      })))}</div>`
+    : '';
+  showPublishProgress(`<strong>${escapeHtml(summary)}</strong>${chips}`, success ? 'success' : 'failed');
+}
+
+async function handlePublishUpdate(data = {}) {
+  if (Number(data.instanceId) !== currentInstanceId) return;
+  if (data.type === 'task-started') {
+    await activateTab('tasks');
+    showPublishProgress(`<strong>任务 #${data.taskId} 正在发布</strong><br>目标频道：${escapeHtml((data.channels || []).join('、'))}`);
+  } else if (data.type === 'target-started') {
+    showPublishProgress(`<strong>任务 #${data.taskId} 正在发布到：${escapeHtml(data.channelName)}</strong><br>第 ${Number(data.attempt) || 1} 次尝试`);
+  } else if (data.type === 'target-waiting') {
+    showPublishProgress(`<strong>当前频道处理完成</strong><br>${Number(data.seconds) || 0} 秒后发布到：${escapeHtml(data.nextChannelName)}`);
+  } else if (data.type === 'target-finished') {
+    const success = data.status === 'success';
+    showPublishProgress(`<strong>${escapeHtml(data.channelName)}：${success ? '发布成功' : '发布失败'}</strong>`, success ? 'success' : 'failed');
+  } else if (data.type === 'task-finished') {
+    await activateTab('tasks');
+    renderPublishResult(data);
+    await Promise.all([loadTasks(true), loadLogs(), refreshSchedulerState()]);
+  }
+}
+
+if (window.api.onPublishUpdate) {
+  window.api.onPublishUpdate(data => handlePublishUpdate(data).catch(() => {}));
+}
 
 loadInstances();

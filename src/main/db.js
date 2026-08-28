@@ -69,6 +69,9 @@ class DB {
     `);
 
     this.ensureColumn('task_targets', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn('tasks', 'scheduled_at', 'TEXT');
+    this.ensureColumn('tasks', 'interval_min_seconds', 'INTEGER');
+    this.ensureColumn('tasks', 'interval_max_seconds', 'INTEGER');
 
     const count = this.db.prepare('SELECT COUNT(*) AS c FROM instances').get().c;
     if (!count) this.db.prepare('INSERT INTO instances(name) VALUES (?)').run('默认实例');
@@ -80,7 +83,7 @@ class DB {
       ['composer_entry', '发帖入口', 'text=期待你的分享\n[placeholder*="期待你的分享"]', 10000],
       ['file_input', '视频上传 input', 'input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]', 30000],
       ['image_input', '图片上传 input', 'input[type="file"][accept*="image"]\ninput[type="file"][accept*="jpeg"]\ninput[type="file"][accept*="png"]', 30000],
-      ['body_input', '正文 ProseMirror', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]', 30000],
+      ['body_input', '评论编辑器 ProseMirror', '.editor-root-container .ProseMirror[contenteditable="true"]\n.ProseMirror[contenteditable="true"]', 30000],
       ['publish_button', '发表按钮', '.publish-button button\nbutton.g-button--primary', 30000],
       ['upload_preview', '上传预览区', '.image-video-container .preview-list', 120000],
       ['success_hint', '发布成功提示', 'text=发表成功\ntext=发布成功', 15000],
@@ -126,13 +129,16 @@ class DB {
         AND value='input[type="file"][accept*="video"]\ninput[type="file"][accept*="video/mp4"]\n.image-video-container input[type="file"]'
     `).run();
 
+    this.db.prepare(`UPDATE selector_configs SET name='评论编辑器 ProseMirror' WHERE key='body_input'`).run();
+
     const settingDefaults = [
       ['max_retries', '2'],
       ['upload_timeout_ms', '120000'],
       ['publish_verify_timeout_ms', '20000'],
       ['screenshot_on_error', '1'],
       ['interval_min_seconds', '180'],
-      ['interval_max_seconds', '480']
+      ['interval_max_seconds', '480'],
+      ['target_interval_seconds', '70']
     ];
     const setDefault = this.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
     for (const row of settingDefaults) setDefault.run(...row);
@@ -158,29 +164,101 @@ class DB {
 
   listInstances() { return this.db.prepare('SELECT * FROM instances ORDER BY id ASC').all(); }
   createInstance(name) { return this.db.prepare('INSERT INTO instances(name) VALUES (?)').run(name); }
+  updateInstanceName(id, name) {
+    const normalizedId = Number(id);
+    const normalizedName = String(name || '').trim();
+    if (!Number.isInteger(normalizedId) || normalizedId <= 0) throw new Error('实例不存在');
+    if (!normalizedName) throw new Error('实例名称不能为空');
+    const result = this.db.prepare('UPDATE instances SET name=? WHERE id=?').run(normalizedName, normalizedId);
+    if (!result.changes) throw new Error('实例不存在');
+    return { id: normalizedId, name: normalizedName };
+  }
+  getInstanceSummary(id) {
+    const normalizedId = Number(id);
+    const row = this.db.prepare(`
+      SELECT i.id, i.name,
+        (SELECT COUNT(*) FROM channels c WHERE c.instance_id=i.id) AS channel_count,
+        (SELECT COUNT(*) FROM tasks t WHERE t.instance_id=i.id) AS task_count,
+        (SELECT COUNT(*) FROM tasks t WHERE t.instance_id=i.id AND t.status='running') AS running_task_count
+      FROM instances i WHERE i.id=?
+    `).get(normalizedId);
+    if (!row) throw new Error('实例不存在');
+    return row;
+  }
+  deleteInstance(id) {
+    const summary = this.getInstanceSummary(id);
+    const normalizedId = Number(summary.id);
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM task_targets WHERE task_id IN (SELECT id FROM tasks WHERE instance_id=?)').run(normalizedId);
+      this.db.prepare('DELETE FROM tasks WHERE instance_id=?').run(normalizedId);
+      this.db.prepare('DELETE FROM channels WHERE instance_id=?').run(normalizedId);
+      const result = this.db.prepare('DELETE FROM instances WHERE id=?').run(normalizedId);
+      if (!result.changes) throw new Error('实例不存在');
+    });
+    tx();
+    return {
+      id: normalizedId,
+      name: summary.name,
+      deletedChannels: Number(summary.channel_count || 0),
+      deletedTasks: Number(summary.task_count || 0)
+    };
+  }
   listChannels(instanceId) { return this.db.prepare('SELECT * FROM channels WHERE instance_id=? ORDER BY id ASC').all(instanceId); }
-  addChannel(instanceId, name, url) { return this.db.prepare('INSERT INTO channels(instance_id,name,url) VALUES (?,?,?)').run(instanceId, name, url); }
+  addChannel(instanceId, name, url) {
+    const normalizedInstanceId = Number(instanceId);
+    const normalizedName = String(name || '').trim();
+    const normalizedUrl = String(url || '').trim();
+    this.getInstanceSummary(normalizedInstanceId);
+    if (!normalizedName) throw new Error('频道名称不能为空');
+    if (!/^https:\/\/pd\.qq\.com\/g\//i.test(normalizedUrl)) throw new Error('腾讯频道 URL 无效');
+    return this.db.prepare('INSERT INTO channels(instance_id,name,url) VALUES (?,?,?)').run(normalizedInstanceId, normalizedName, normalizedUrl);
+  }
+  updateChannelName(id, name) {
+    const normalizedName = String(name || '').trim();
+    if (!normalizedName) throw new Error('频道名称不能为空');
+    return this.db.prepare('UPDATE channels SET name=? WHERE id=?').run(normalizedName, id);
+  }
   deleteChannel(id) { this.db.prepare('DELETE FROM task_targets WHERE channel_id=?').run(id); return this.db.prepare('DELETE FROM channels WHERE id=?').run(id); }
 
-  listTasks(instanceId) {
-    const tasks = this.db.prepare('SELECT * FROM tasks WHERE instance_id=? ORDER BY id DESC').all(instanceId);
+  listTasks(instanceId, page = 1, pageSize = 10) {
+    const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(Number(pageSize) || 10)));
+    const total = this.db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE instance_id=?').get(instanceId).c;
+    const totalPages = Math.max(1, Math.ceil(total / normalizedPageSize));
+    const normalizedPage = Math.min(totalPages, Math.max(1, Math.floor(Number(page) || 1)));
+    const offset = (normalizedPage - 1) * normalizedPageSize;
+    const tasks = this.db.prepare('SELECT * FROM tasks WHERE instance_id=? ORDER BY id DESC LIMIT ? OFFSET ?').all(instanceId, normalizedPageSize, offset);
     const getTargets = this.db.prepare(`SELECT tt.*, c.name AS channel_name, c.url AS channel_url FROM task_targets tt JOIN channels c ON c.id = tt.channel_id WHERE tt.task_id=? ORDER BY tt.id ASC`);
-    return tasks.map(t => ({ ...t, targets: getTargets.all(t.id) }));
+    return {
+      items: tasks.map(t => ({ ...t, targets: getTargets.all(t.id) })),
+      page: normalizedPage,
+      pageSize: normalizedPageSize,
+      total,
+      totalPages
+    };
   }
 
-  createTask(instanceId, title, body, mediaPath, channelIds, mediaType = 'video') {
+  createTask(instanceId, title, body, mediaPath, channelIds, mediaType = 'video', scheduledAt = null, intervalMinSeconds = null, intervalMaxSeconds = null) {
     const type = ['text', 'image', 'video'].includes(mediaType) ? mediaType : 'video';
     const normalizedBody = body || title || '';
-    if (type === 'text' && !normalizedBody.trim()) throw new Error('纯文本任务必须填写正文或标题');
+    if (type === 'text' && !normalizedBody.trim()) throw new Error('纯文本任务必须填写评论或标题');
     if (type === 'image' && !mediaPath) throw new Error('图片任务必须选择图片文件');
     if (type === 'video' && !mediaPath) throw new Error('视频任务必须选择视频文件');
+    const normalizedScheduledAt = scheduledAt ? new Date(scheduledAt).toISOString() : null;
+    let minSeconds = intervalMinSeconds === '' || intervalMinSeconds == null ? null : Math.max(0, Math.floor(Number(intervalMinSeconds) || 0));
+    let maxSeconds = intervalMaxSeconds === '' || intervalMaxSeconds == null ? null : Math.max(0, Math.floor(Number(intervalMaxSeconds) || 0));
+    if (minSeconds != null && maxSeconds == null) maxSeconds = minSeconds;
+    if (maxSeconds != null && minSeconds == null) minSeconds = maxSeconds;
+    if (minSeconds != null && maxSeconds < minSeconds) [minSeconds, maxSeconds] = [maxSeconds, minSeconds];
     const tx = this.db.transaction(() => {
-      const r = this.db.prepare(`INSERT INTO tasks(instance_id,title,body,media_path,media_type,status) VALUES (?,?,?,?,?, 'pending')`).run(
+      const r = this.db.prepare(`INSERT INTO tasks(instance_id,title,body,media_path,media_type,status,scheduled_at,interval_min_seconds,interval_max_seconds) VALUES (?,?,?,?,?, 'pending',?,?,?)`).run(
         instanceId,
         title || '',
         normalizedBody,
         type === 'text' ? '' : mediaPath,
-        type
+        type,
+        normalizedScheduledAt,
+        minSeconds,
+        maxSeconds
       );
       const targetIns = this.db.prepare(`INSERT INTO task_targets(task_id,channel_id,status) VALUES (?,?, 'pending')`);
       for (const cid of channelIds) targetIns.run(r.lastInsertRowid, cid);
@@ -197,8 +275,37 @@ class DB {
   }
 
   getNextPendingTask(instanceId) {
-    const row = this.db.prepare(`SELECT id FROM tasks WHERE instance_id=? AND status='pending' ORDER BY id ASC LIMIT 1`).get(instanceId);
+    const row = this.db.prepare(`
+      SELECT id FROM tasks
+      WHERE instance_id=? AND status='pending'
+        AND (scheduled_at IS NULL OR datetime(scheduled_at) <= datetime('now'))
+      ORDER BY CASE WHEN scheduled_at IS NULL THEN 0 ELSE 1 END, datetime(scheduled_at) ASC, id ASC
+      LIMIT 1
+    `).get(instanceId);
     return row ? this.getTask(row.id) : null;
+  }
+
+  getNextScheduledAt(instanceId) {
+    const row = this.db.prepare(`
+      SELECT scheduled_at FROM tasks
+      WHERE instance_id=? AND status='pending' AND scheduled_at IS NOT NULL
+        AND datetime(scheduled_at) > datetime('now')
+      ORDER BY datetime(scheduled_at) ASC LIMIT 1
+    `).get(instanceId);
+    return row?.scheduled_at || null;
+  }
+
+  getPendingTaskSummary(instanceId) {
+    const row = this.db.prepare(`SELECT COUNT(*) AS task_count FROM tasks WHERE instance_id=? AND status='pending'`).get(instanceId);
+    const channels = this.db.prepare(`
+      SELECT DISTINCT c.name
+      FROM tasks t
+      JOIN task_targets tt ON tt.task_id=t.id
+      JOIN channels c ON c.id=tt.channel_id
+      WHERE t.instance_id=? AND t.status='pending' AND tt.status!='success'
+      ORDER BY c.name COLLATE NOCASE
+    `).all(instanceId).map(item => item.name);
+    return { taskCount: row.task_count, channels };
   }
 
   countPendingTasks(instanceId) {
@@ -221,6 +328,21 @@ class DB {
   resetFailedTargets(taskId) {
     this.db.prepare(`UPDATE task_targets SET status='pending', last_error='' WHERE task_id=? AND status='failed'`).run(taskId);
     this.db.prepare(`UPDATE tasks SET status='pending', finished_at=NULL WHERE id=?`).run(taskId);
+  }
+
+  deleteTasks(taskIds) {
+    const ids = [...new Set((Array.isArray(taskIds) ? taskIds : []).map(Number).filter(Number.isInteger))];
+    if (!ids.length) return { deletedCount: 0, skippedRunningCount: 0 };
+    const placeholders = ids.map(() => '?').join(',');
+    const deletableIds = this.db.prepare(`SELECT id FROM tasks WHERE id IN (${placeholders}) AND status!='running'`).all(...ids).map(row => row.id);
+    if (!deletableIds.length) return { deletedCount: 0, skippedRunningCount: ids.length };
+    const deletePlaceholders = deletableIds.map(() => '?').join(',');
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM task_targets WHERE task_id IN (${deletePlaceholders})`).run(...deletableIds);
+      this.db.prepare(`DELETE FROM tasks WHERE id IN (${deletePlaceholders})`).run(...deletableIds);
+    });
+    tx();
+    return { deletedCount: deletableIds.length, skippedRunningCount: ids.length - deletableIds.length };
   }
 
   getSelectors() { return this.db.prepare('SELECT * FROM selector_configs ORDER BY id ASC').all(); }

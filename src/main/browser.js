@@ -3,6 +3,10 @@ const fs = require('fs');
 const { WebContentsView, session, safeStorage } = require('electron');
 
 const QQ_HOME = 'https://pd.qq.com/';
+// 历史版本把默认实例（#1）的登录态保存在这个 partition/profile 中。
+// 现在实例只负责分组频道，所有实例共用这套 QQ 登录态，同时保留已有登录。
+const SHARED_QQ_PARTITION = 'persist:qq-channel-instance-1';
+const SHARED_QQ_PROFILE = '1';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 class NonRetryableError extends Error {
@@ -30,18 +34,29 @@ class BrowserManager {
     });
   }
 
-  profilePath(instanceId) {
-    const p = path.join(this.userDataPath, 'profiles', String(instanceId));
+  notifyPublishUpdate(data) {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    this.mainWindow.webContents.send('publish:update', data);
+  }
+
+  targetIntervalMs() {
+    let seconds = Number(this.db.getSetting('target_interval_seconds', '70'));
+    if (!Number.isFinite(seconds)) seconds = 70;
+    return Math.max(0, Math.floor(seconds)) * 1000;
+  }
+
+  profilePath() {
+    const p = path.join(this.userDataPath, 'profiles', SHARED_QQ_PROFILE);
     fs.mkdirSync(p, { recursive: true });
     return p;
   }
 
-  authStatePath(instanceId) {
-    return path.join(this.profilePath(instanceId), 'auth-state.bin');
+  authStatePath() {
+    return path.join(this.profilePath(), 'auth-state.bin');
   }
 
-  partitionName(instanceId) {
-    return `persist:qq-channel-instance-${Number(instanceId)}`;
+  partitionName() {
+    return SHARED_QQ_PARTITION;
   }
 
   isAllowedQQUrl(url) {
@@ -58,7 +73,7 @@ class BrowserManager {
     const id = Number(instanceId);
     if (this.views.has(id)) return this.views.get(id);
 
-    const persistentSession = session.fromPartition(this.partitionName(id));
+    const persistentSession = session.fromPartition(this.partitionName());
     const view = new WebContentsView({
       webPreferences: {
         session: persistentSession,
@@ -105,9 +120,24 @@ class BrowserManager {
 
     this.views.set(id, record);
     await this.restoreAuthState(id, record).catch(error => {
-      this.db.log('warn', `实例 #${id} 登录会话恢复失败：${String(error?.message || error)}`);
+      this.db.log('warn', `QQ 登录会话恢复失败：${String(error?.message || error)}`);
     });
     return record;
+  }
+
+  async destroyInstance(instanceId) {
+    const id = Number(instanceId);
+    const record = this.views.get(id);
+    if (!record) return { destroyed: false };
+
+    record.view.setVisible(false);
+    try { this.mainWindow.contentView.removeChildView(record.view); } catch (_) {}
+    if (!record.view.webContents.isDestroyed()) {
+      record.view.webContents.close({ waitForBeforeUnload: false });
+    }
+    this.views.delete(id);
+    if (this.activeInstanceId === id) this.activeInstanceId = null;
+    return { destroyed: true };
   }
 
   normalizeBounds(bounds) {
@@ -166,7 +196,7 @@ class BrowserManager {
   async restoreAuthState(instanceId, record) {
     if (record.restored) return false;
     record.restored = true;
-    const statePath = this.authStatePath(instanceId);
+    const statePath = this.authStatePath();
     if (!fs.existsSync(statePath) || !safeStorage.isEncryptionAvailable()) return false;
 
     const encrypted = fs.readFileSync(statePath);
@@ -208,7 +238,7 @@ class BrowserManager {
 
   async saveAuthState(instanceId, record) {
     if (!safeStorage.isEncryptionAvailable()) {
-      this.db.log('warn', `实例 #${instanceId} 无法使用系统加密，未导出登录会话备份`);
+      this.db.log('warn', '当前系统无法使用安全加密，未导出 QQ 登录会话备份');
       return false;
     }
 
@@ -239,7 +269,7 @@ class BrowserManager {
     }
 
     const payload = JSON.stringify({ version: 2, cookies, webStorage });
-    fs.writeFileSync(this.authStatePath(instanceId), safeStorage.encryptString(payload));
+    fs.writeFileSync(this.authStatePath(), safeStorage.encryptString(payload));
     return true;
   }
 
@@ -357,7 +387,7 @@ class BrowserManager {
       // 否则会把真实登录会话误报为未登录，并在任务开始前直接拦截。
       const found = await this.waitForElement(record.view.webContents, selectors.logged_in_user, { visible: false, timeout });
       await this.saveAuthState(instanceId, record).catch(error => {
-        this.db.log('warn', `实例 #${instanceId} 登录会话保存失败：${String(error?.message || error)}`);
+        this.db.log('warn', `QQ 登录会话保存失败：${String(error?.message || error)}`);
       });
       return { loggedIn: true, name: found.text || '已登录', url: record.view.webContents.getURL() };
     } catch (_) {
@@ -377,7 +407,7 @@ class BrowserManager {
     if (!text) return;
     await this.waitForElement(webContents, config, { visible: true });
     const result = await this.elementAction(webContents, config, 'fill', text);
-    if (!result?.found) throw new Error('正文编辑器写入失败');
+    if (!result?.found) throw new Error('评论编辑器写入失败');
   }
 
   async ensureComposerOpen(webContents, selectors) {
@@ -397,7 +427,7 @@ class BrowserManager {
     try {
       return await this.waitForElement(webContents, selectors.body_input, { visible: true, timeout: 10000 });
     } catch (_) {
-      throw new NonRetryableError('已点击发帖入口，但正文编辑器没有展开；请更新正文编辑器选择器');
+      throw new NonRetryableError('已点击发帖入口，但评论编辑器没有展开；请更新评论编辑器选择器');
     }
   }
 
@@ -538,6 +568,13 @@ class BrowserManager {
     const webContents = record.view.webContents;
     try {
       this.db.setTargetStatus(target.id, 'running');
+      this.notifyPublishUpdate({
+        type: 'target-started',
+        instanceId: task.instance_id,
+        taskId: task.id,
+        channelName: target.channel_name,
+        attempt
+      });
       this.db.log('info', `任务 #${task.id} 打开频道：${target.channel_name}（第${attempt}次）`);
       await this.navigate(task.instance_id, target.channel_url);
 
@@ -555,7 +592,7 @@ class BrowserManager {
         const mediaLabel = task.media_type === 'image' ? '图片' : '视频';
         this.db.log('info', `任务 #${task.id} -> ${target.channel_name} ${mediaLabel}已选择，等待上传完成`);
       } else {
-        this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 正文已填写，等待发表按钮可用`);
+        this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 评论已填写，等待发表按钮可用`);
       }
 
       await this.waitPublishReady(webContents, selectors, !isTextTask, task.media_type);
@@ -567,12 +604,26 @@ class BrowserManager {
       const verify = await this.verifyPublishSuccess(webContents, selectors);
       this.db.setTargetStatus(target.id, 'success');
       this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 发布成功（${verify.reason}）`);
+      this.notifyPublishUpdate({
+        type: 'target-finished',
+        instanceId: task.instance_id,
+        taskId: task.id,
+        channelName: target.channel_name,
+        status: 'success'
+      });
       return true;
     } catch (error) {
       const msg = String(error?.message || error);
       const screenshot = await this.saveFailureScreenshot(webContents, task.id, target.id, attempt);
       this.db.setTargetStatus(target.id, 'failed', screenshot ? `${msg}\n截图：${screenshot}` : msg);
       this.db.log('error', `任务 #${task.id} -> ${target.channel_name} 失败：${msg}${screenshot ? `；截图：${screenshot}` : ''}`);
+      this.notifyPublishUpdate({
+        type: 'target-finished',
+        instanceId: task.instance_id,
+        taskId: task.id,
+        channelName: target.channel_name,
+        status: 'failed'
+      });
       throw error;
     }
   }
@@ -585,15 +636,30 @@ class BrowserManager {
 
     this.db.setTaskStatus(task.id, 'running');
     this.db.log('info', `开始任务 #${task.id}`);
+    const executableTargets = task.targets.filter(target => target.status !== 'success');
+    this.notifyPublishUpdate({
+      type: 'task-started',
+      instanceId: task.instance_id,
+      taskId: task.id,
+      channels: executableTargets.map(target => target.channel_name)
+    });
     const login = await this.getLoginStatus(task.instance_id, record).catch(() => ({ loggedIn: false }));
     if (!login.loggedIn) {
       this.db.setTaskStatus(task.id, 'failed');
       this.db.log('error', `任务 #${task.id} 未执行：QQ 未登录或登录已失效`);
+      this.notifyPublishUpdate({
+        type: 'task-finished',
+        instanceId: task.instance_id,
+        taskId: task.id,
+        success: false,
+        successCount: 0,
+        failedCount: executableTargets.length
+      });
       throw new Error('QQ 未登录或登录已失效，请先点击“登录QQ”');
     }
 
-    for (const target of task.targets) {
-      if (target.status === 'success') continue;
+    for (let targetIndex = 0; targetIndex < executableTargets.length; targetIndex++) {
+      const target = executableTargets[targetIndex];
       let success = false;
       let lastError = null;
       for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
@@ -618,12 +684,47 @@ class BrowserManager {
         allSuccess = false;
         this.db.log('error', `任务 #${task.id} -> ${target.channel_name} 已达到最大重试次数：${String(lastError?.message || lastError || '')}`);
       }
+
+      if (targetIndex < executableTargets.length - 1) {
+        const waitMs = this.targetIntervalMs();
+        if (waitMs > 0) {
+          const nextChannelName = executableTargets[targetIndex + 1].channel_name;
+          this.db.log('info', `任务 #${task.id} 多频道发布间隔 ${Math.round(waitMs / 1000)} 秒，下一个：${nextChannelName}`);
+          this.notifyPublishUpdate({
+            type: 'target-waiting',
+            instanceId: task.instance_id,
+            taskId: task.id,
+            seconds: Math.round(waitMs / 1000),
+            nextChannelName
+          });
+          await sleep(waitMs);
+        }
+      }
     }
 
     await this.saveAuthState(task.instance_id, record).catch(() => {});
     this.db.setTaskStatus(task.id, allSuccess ? 'success' : 'failed');
     this.db.log('info', `任务 #${task.id} 结束，状态：${allSuccess ? 'success' : 'failed'}`);
-    return { success: allSuccess };
+    const finishedTask = this.db.getTask(task.id);
+    const targetResults = finishedTask.targets.map(target => ({
+      channelName: target.channel_name,
+      status: target.status
+    }));
+    const successCount = targetResults.filter(target => target.status === 'success').length;
+    const failedCount = targetResults.filter(target => target.status === 'failed').length;
+    const result = {
+      success: allSuccess,
+      taskId: task.id,
+      successCount,
+      failedCount,
+      targets: targetResults
+    };
+    this.notifyPublishUpdate({
+      type: 'task-finished',
+      instanceId: task.instance_id,
+      ...result
+    });
+    return result;
   }
 }
 
