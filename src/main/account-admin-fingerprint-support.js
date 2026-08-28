@@ -1,15 +1,7 @@
 const crypto = require('crypto');
 
-const ADMIN_ROLE_RE = /管理员|频道主|创建者|群主|owner|admin/i;
-
 function text(value) {
   return String(value == null ? '' : value).trim();
-}
-
-function isAdminMember(member = {}) {
-  const roleId = text(member.role_id ?? member.roleId);
-  const roleName = text(member.role_name ?? member.roleName ?? member.title);
-  return roleId === '2' || ADMIN_ROLE_RE.test(roleName);
 }
 
 function normalizeGuild(item = {}) {
@@ -21,12 +13,13 @@ function normalizeGuild(item = {}) {
 }
 
 function normalizeAdmin(member = {}, guild = {}) {
+  const user = member.user && typeof member.user === 'object' ? member.user : member;
   return {
     guildId: guild.guildId,
     guildNumber: guild.guildNumber,
     guildName: guild.name,
-    tinyId: text(member.tiny_id ?? member.tinyId ?? member.user_id ?? member.userId),
-    nickname: text(member.nickname ?? member.nick ?? member.name),
+    tinyId: text(user.tiny_id ?? user.tinyId ?? user.user_id ?? user.userId ?? member.tiny_id ?? member.tinyId),
+    nickname: text(user.nickname ?? user.nick ?? user.name ?? member.nickname ?? member.nick ?? member.name),
     roleId: text(member.role_id ?? member.roleId),
     roleName: text(member.role_name ?? member.roleName ?? member.title)
   };
@@ -57,17 +50,23 @@ async function listManagedGuilds(cli) {
 }
 
 async function getSingleGuildAdmin(cli, guild) {
-  let nextToken = '';
+  let nextPageToken = '';
   for (let page = 0; page < 100; page += 1) {
     const payload = { guild_id: guild.guildId };
-    if (nextToken) payload.next_token = nextToken;
+    if (nextPageToken) payload.next_page_token = nextPageToken;
     const data = await cli.run(['manage', 'get-guild-member-list', '--json'], payload);
-    const members = data.members || data.member_list || data.memberList || [];
-    const admins = members.filter(isAdminMember).map(member => normalizeAdmin(member, guild)).filter(item => item.tinyId);
-    if (admins.length) return admins[0];
-    const finished = Boolean(data.finished ?? data.is_finished ?? data.isFinished);
-    nextToken = text(data.next_token ?? data.nextToken);
-    if (finished || !nextToken) break;
+
+    // tencent-channel-cli 已经把成员按 owners / admins / robots / members 分类。
+    // 当前项目约定每个频道只有一个管理员，所以直接读取 admins；若该账号是频道主，
+    // admins 为空时再读取 owners。不要再从普通 members 中根据 role_id 猜管理员。
+    const directAdmins = Array.isArray(data.admins) ? data.admins : [];
+    const owners = Array.isArray(data.owners) ? data.owners : [];
+    const candidates = directAdmins.length ? directAdmins : owners;
+    const normalized = candidates.map(member => normalizeAdmin(member, guild)).filter(item => item.tinyId);
+    if (normalized.length) return normalized[0];
+
+    nextPageToken = text(data.next_page_token ?? data.nextPageToken);
+    if (!nextPageToken) break;
   }
   return null;
 }
