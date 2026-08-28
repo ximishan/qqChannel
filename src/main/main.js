@@ -131,7 +131,11 @@ function registerIPC() {
 
   ipcMain.handle('browser:login', async () => browserManager.beginPublishingLogin());
   ipcMain.handle('browser:status', async () => browserManager.getPublishingLoginStatus());
-  ipcMain.handle('browser:logout', async () => browserManager.logoutPublishing());
+  ipcMain.handle('browser:logout', async () => {
+    const busyGroup = db.listInstances().find(instance => schedulerIsBusy(instance.id));
+    if (busyGroup) throw new Error(`频道分组“${busyGroup.name}”的发布队列仍在运行，请先停止发布再退出账号`);
+    return browserManager.logoutPublishing();
+  });
   ipcMain.handle('publisher:pollLogin', async () => browserManager.pollPublishingLogin());
   ipcMain.handle('browser:view', async (_, data) => browserManager.setViewState(data));
   ipcMain.handle('browser:home', async (_, instanceId) => browserManager.navigate(instanceId));
