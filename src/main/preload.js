@@ -52,5 +52,3 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('publish:update', listener);
   }
 });
-
-require('./channel-sync-preload');
