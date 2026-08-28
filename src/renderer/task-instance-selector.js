@@ -8,6 +8,18 @@
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[char]));
 
+  function beijingLocalToISOString(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    // datetime-local 没有时区信息。这里固定把用户输入解释为北京时间（UTC+8），
+    // 不再依赖 Windows 当前系统时区。
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) throw new Error('开始时间格式无效');
+    const [, y, m, d, hh, mm, ss = '00'] = match;
+    const utcMs = Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh) - 8, Number(mm), Number(ss));
+    return new Date(utcMs).toISOString();
+  }
+
   function replaceButton(id) {
     const oldButton = qs(`#${id}`);
     if (!oldButton) return null;
@@ -184,7 +196,7 @@
     }
     if (intervalMaxSeconds < intervalMinSeconds) [intervalMinSeconds, intervalMaxSeconds] = [intervalMaxSeconds, intervalMinSeconds];
 
-    const scheduledAt = startTimeValue ? new Date(startTimeValue).toISOString() : null;
+    const scheduledAt = startTimeValue ? beijingLocalToISOString(startTimeValue) : null;
     if (!title && mediaType === 'text') return alert('纯文本任务必须填写任务标题/发布内容');
 
     const instanceCount = new Set(targets.map(item => Number(item.instance.id))).size;
