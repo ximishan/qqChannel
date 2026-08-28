@@ -222,13 +222,35 @@ function installWindowsKeychainAccountSandbox() {
 
   TencentChannelCli.prototype.beginLogin = async function beginWindowsAccountLogin() {
     clearSnapshot(this);
-    loginBaselines.set(this.userDataPath, enumerateCredentials());
+    loginBaselines.delete(this.userDataPath);
+
+    // 先让 CLI 生成二维码。Windows 凭据枚举属于辅助隔离逻辑，绝不能阻塞二维码展示。
     const qrcodePath = path.join(this.userDataPath, 'qq-channel-login.png');
     const data = await this.run(['login', '--json', '--yes', '--qrcode-path', qrcodePath], null, { timeoutMs: 30000 });
     const returnedPath = String(data.qrcode_path || qrcodePath);
     let qrDataUrl = '';
-    if (fs.existsSync(returnedPath)) qrDataUrl = `data:image/png;base64,${fs.readFileSync(returnedPath).toString('base64')}`;
-    return { ...data, alreadyLoggedIn: false, qrcodePath: returnedPath, qrDataUrl, verificationUri: String(data.verification_uri || data.verification_url || '') };
+    if (fs.existsSync(returnedPath)) {
+      qrDataUrl = `data:image/png;base64,${fs.readFileSync(returnedPath).toString('base64')}`;
+    }
+    if (!qrDataUrl) {
+      throw new Error(`QQ登录二维码生成失败：未找到二维码文件 ${returnedPath}`);
+    }
+
+    // 二维码已经生成但尚未展示给用户，此时再抓登录前基线；即便基线抓取失败，也照常返回二维码。
+    try {
+      loginBaselines.set(this.userDataPath, enumerateCredentials());
+    } catch (error) {
+      loginBaselines.set(this.userDataPath, null);
+      console.warn('[QQ login] Windows credential baseline skipped:', String(error?.message || error));
+    }
+
+    return {
+      ...data,
+      alreadyLoggedIn: false,
+      qrcodePath: returnedPath,
+      qrDataUrl,
+      verificationUri: String(data.verification_uri || data.verification_url || '')
+    };
   };
 
   TencentChannelCli.prototype.pollLogin = async function pollWindowsAccountLogin() {
@@ -236,8 +258,12 @@ function installWindowsKeychainAccountSandbox() {
     const status = String(data?.status || '').toLowerCase();
     if (status && status !== 'authorized') throw new Error(String(data?.message || `QQ扫码状态：${status}`));
 
-    const before = loginBaselines.get(this.userDataPath) || [];
+    const before = loginBaselines.get(this.userDataPath);
     loginBaselines.delete(this.userDataPath);
+    if (!Array.isArray(before)) {
+      throw new Error('扫码已授权，但本次登录前的 Windows 凭据基线读取失败；二维码流程正常，账号隔离凭据暂未保存。');
+    }
+
     const after = enumerateCredentials();
     const changed = changedCredentials(before, after);
     if (!changed.length) {
