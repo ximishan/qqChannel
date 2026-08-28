@@ -52,7 +52,17 @@ module.exports = function installSingleAccountSupport(DB, BrowserManager) {
 
   BrowserManager.prototype.logoutPublishing = async function logoutPublishing() {
     const cli = this.getChannelCli();
-    const account = this.db.getActiveQQAccount?.() || null;
+
+    // 兼容从旧单账号版本升级：如果旧频道/任务还没有 account_id，
+    // 先利用当前仍有效的 QQ 登录态识别账号并完成一次归属迁移，再执行真正退出。
+    let account = this.db.getActiveQQAccount?.() || null;
+    if (!account && typeof this.getPublishingLoginStatus === 'function') {
+      try {
+        const status = await this.getPublishingLoginStatus();
+        if (status?.loggedIn) account = this.db.getActiveQQAccount?.() || null;
+      } catch (_) {}
+    }
+
     const result = await cli.logout();
 
     for (const record of this.views.values()) {
