@@ -2,6 +2,23 @@ function text(value) {
   return String(value == null ? '' : value).trim();
 }
 
+function sanitize(value, depth = 0) {
+  if (depth > 6) return '[max-depth]';
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(item => sanitize(item, depth + 1));
+  if (typeof value !== 'object') return value;
+
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (/token|cookie|credential|secret|authorization|password|passwd|keychain/i.test(key)) {
+      out[key] = '[REDACTED]';
+      continue;
+    }
+    out[key] = sanitize(child, depth + 1);
+  }
+  return out;
+}
+
 function normalizeGuild(item = {}) {
   return {
     guildId: text(item.guild_id ?? item.guildId),
@@ -30,15 +47,26 @@ async function getOneCreatedGuild(cli) {
   return null;
 }
 
-async function getGuildOwner(cli, guild) {
+async function getGuildOwner(manager, guild) {
+  const cli = manager.getChannelCli();
   let nextPageToken = '';
   for (let page = 0; page < 100; page += 1) {
     const payload = { guild_id: guild.guildId };
     if (nextPageToken) payload.next_page_token = nextPageToken;
     const data = await cli.run(['manage', 'get-guild-member-list', '--json'], payload);
+
+    try {
+      manager.db.log(
+        'info',
+        `[QQ账号诊断] get-guild-member-list 频道=${guild.name || guild.guildNumber || guild.guildId} ` +
+        `guild_id=${guild.guildId} page=${page + 1} 返回=${JSON.stringify(sanitize(data))}`
+      );
+    } catch (_) {}
+
     const owners = Array.isArray(data.owners) ? data.owners : [];
     const owner = owners.map(member => normalizeOwner(member, guild)).find(item => item.tinyId);
     if (owner) return owner;
+
     nextPageToken = text(data.next_page_token ?? data.nextPageToken);
     if (!nextPageToken) break;
   }
@@ -49,7 +77,7 @@ async function detectCurrentOwner(manager) {
   const cli = manager.getChannelCli();
   const guild = await getOneCreatedGuild(cli);
   if (!guild) throw new Error('当前账号没有创建过频道，无法识别账号');
-  const owner = await getGuildOwner(cli, guild);
+  const owner = await getGuildOwner(manager, guild);
   if (!owner) throw new Error(`频道“${guild.name || guild.guildNumber || guild.guildId}”没有读取到频道主`);
   return { ...owner, sampledGuildCount: 1 };
 }
