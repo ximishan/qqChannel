@@ -1,9 +1,9 @@
 const DB = require('./db');
 const BrowserManager = require('./browser');
 
-// 必须最先安装：Windows 版 tencent-channel-cli 可能直接读取真实 ~/.qqcli，
-// 这里对每个 QQ 账号做凭证目录硬隔离，避免切换账号后串登录状态。
-require('./qqcli-credential-sandbox');
+// Windows 版 CLI 默认登录态来自系统 keychain，不能靠 HOME/USERPROFILE 做账号隔离。
+// 改为扫码后保存每个账号自己的 token，并通过 QQ_AI_CONNECT_DOTENV 明确选择账号凭证。
+require('./qqcli-account-token');
 
 require('./comment-support')(DB, BrowserManager);
 require('./cli-publishing-support')(DB, BrowserManager);
