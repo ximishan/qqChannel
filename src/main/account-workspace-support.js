@@ -31,7 +31,12 @@ function findStableIdentity(status = {}) {
 
   walk(status);
   if (!found.length) return null;
-  found.sort((a, b) => preferredKeys.indexOf(a.key) - preferredKeys.indexOf(b.key));
+  const priority = key => {
+    const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const idx = preferredKeys.map(item => item.replace(/[^a-z0-9]/gi, '').toLowerCase()).indexOf(normalized);
+    return idx < 0 ? 999 : idx;
+  };
+  found.sort((a, b) => priority(a.key) - priority(b.key));
   const best = found[0];
   return {
     externalKey: `qqid:${best.key}:${best.value}`,
@@ -41,23 +46,20 @@ function findStableIdentity(status = {}) {
   };
 }
 
-function fingerprintGuilds(data = {}) {
-  const guilds = [];
-  for (const key of ['created_guilds', 'managed_guilds', 'joined_guilds']) {
-    for (const item of data[key] || []) {
-      const guildId = normalizeIdValue(item?.guild_id);
-      if (guildId) guilds.push(`${key}:${guildId}`);
+function safeShape(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 2) return typeof value;
+  if (Array.isArray(value)) return [`array(${value.length})`];
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (/token|cookie|credential|secret|keychain|authorization/i.test(key)) {
+      result[key] = '[sensitive]';
+    } else if (child && typeof child === 'object') {
+      result[key] = safeShape(child, depth + 1);
+    } else {
+      result[key] = typeof child;
     }
   }
-  const unique = [...new Set(guilds)].sort();
-  if (!unique.length) return null;
-  const digest = crypto.createHash('sha256').update(unique.join('|')).digest('hex');
-  return {
-    externalKey: `guildfp:${digest}`,
-    identityType: 'guild_fingerprint',
-    identityValue: digest,
-    identityMeta: JSON.stringify({ guilds: unique })
-  };
+  return result;
 }
 
 module.exports = function installAccountWorkspaceSupport(DB, BrowserManager) {
@@ -127,10 +129,19 @@ module.exports = function installAccountWorkspaceSupport(DB, BrowserManager) {
       }
 
       const accountId = Number(account.id);
-      // 升级旧单账号数据：第一次识别账号时，把尚未归属账号的数据一次性归到当前 QQ。
-      this.db.prepare('UPDATE instances SET account_id=? WHERE account_id IS NULL OR account_id=0').run(accountId);
-      this.db.prepare('UPDATE channels SET account_id=? WHERE account_id IS NULL OR account_id=0').run(accountId);
-      this.db.prepare('UPDATE tasks SET account_id=? WHERE account_id IS NULL OR account_id=0').run(accountId);
+      // 只在数据库里尚未存在任何已归属账号数据时迁移旧版未归属数据。
+      // 不能在每次登录时都把 account_id=NULL 的数据归给当前账号，否则切换账号会串数据。
+      const ownedRows = this.db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM instances WHERE account_id IS NOT NULL AND account_id<>0) +
+          (SELECT COUNT(*) FROM channels WHERE account_id IS NOT NULL AND account_id<>0) +
+          (SELECT COUNT(*) FROM tasks WHERE account_id IS NOT NULL AND account_id<>0) AS c
+      `).get().c;
+      if (!ownedRows) {
+        this.db.prepare('UPDATE instances SET account_id=? WHERE account_id IS NULL OR account_id=0').run(accountId);
+        this.db.prepare('UPDATE channels SET account_id=? WHERE account_id IS NULL OR account_id=0').run(accountId);
+        this.db.prepare('UPDATE tasks SET account_id=? WHERE account_id IS NULL OR account_id=0').run(accountId);
+      }
 
       const groupCount = this.db.prepare('SELECT COUNT(*) AS c FROM instances WHERE account_id=?').get(accountId).c;
       if (!groupCount) this.db.prepare('INSERT INTO instances(name,account_id) VALUES (?,?)').run('默认频道分组', accountId);
@@ -155,10 +166,7 @@ module.exports = function installAccountWorkspaceSupport(DB, BrowserManager) {
 
   DB.prototype.listInstances = function listInstancesForAccount() {
     const accountId = this.getActiveAccountId();
-    if (!accountId) {
-      // 升级前的旧数据还没有 account_id 时先显示，登录状态确认后会自动归属当前 QQ。
-      return this.db.prepare('SELECT * FROM instances WHERE account_id IS NULL OR account_id=0 ORDER BY id ASC').all();
-    }
+    if (!accountId) return [];
     return this.db.prepare('SELECT * FROM instances WHERE account_id=? ORDER BY id ASC').all(accountId);
   };
 
@@ -316,18 +324,55 @@ module.exports = function installAccountWorkspaceSupport(DB, BrowserManager) {
     return rows;
   };
 
-  async function resolveIdentity(manager, status) {
-    const direct = findStableIdentity(status);
-    if (direct) return direct;
-    const guildData = await manager.getChannelCli().run(['manage', 'get-my-join-guild-info', '--json'], {});
-    const fallback = fingerprintGuilds(guildData);
-    if (fallback) return fallback;
-    throw new Error('QQ 已登录，但组件没有返回可用于区分账号的唯一标识；请先确认该 QQ 至少加入或创建了一个 QQ 频道');
+  function newProvisionalIdentity(source, status = {}) {
+    const nonce = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+    return {
+      externalKey: `session:${nonce}`,
+      identityType: 'login_session',
+      identityValue: nonce,
+      identityMeta: JSON.stringify({ source, shape: safeShape(status) })
+    };
   }
 
-  BrowserManager.prototype.bindLoggedInQQAccount = async function bindLoggedInQQAccount(status = {}) {
+  async function resolveIdentity(manager, status, options = {}) {
+    const direct = findStableIdentity(status);
+    if (direct) return direct;
+
+    // 重要：绝不能再使用“加入/管理的频道集合”作为账号唯一标识。
+    // 两个 QQ 可能加入完全相同的频道，之前正是因此把第二个 QQ 错认成第一个账号。
+    // 新扫码登录但 CLI 未返回稳定用户 ID 时，宁可创建一个新的临时本地账号，也不能复用旧账号数据。
+    if (options.freshLogin) return newProvisionalIdentity(options.source || 'fresh-login', status);
+
+    // 同一程序会话内，已经绑定过账号时，login status 只用于续验，不重新猜账号。
+    const active = manager.db.getActiveQQAccount?.();
+    if (active) {
+      return {
+        externalKey: active.external_key,
+        identityType: active.identity_type,
+        identityValue: active.identity_value,
+        identityMeta: active.identity_meta || ''
+      };
+    }
+
+    // 未绑定账号且 status 又没有稳定身份时，禁止自动拿旧账号兜底。
+    // 等用户走一次扫码流程，由 poll-token 建立新的隔离工作区。
+    manager.db.log('warn', `QQ 登录状态有效，但 CLI 未返回稳定账号ID；未自动绑定旧工作区。status结构=${JSON.stringify(safeShape(status))}`);
+    return null;
+  }
+
+  BrowserManager.prototype.bindLoggedInQQAccount = async function bindLoggedInQQAccount(status = {}, options = {}) {
     if (!status?.loggedIn && !status?.valid && !status?.alreadyLoggedIn) return status;
-    const identity = await resolveIdentity(this, status);
+    const identity = await resolveIdentity(this, status, options);
+    if (!identity) {
+      return {
+        ...status,
+        loggedIn: true,
+        accountId: null,
+        accountIdentityType: 'unresolved',
+        accountBindingRequired: true,
+        name: String(status.nickname || status.display_name || status.name || 'QQ账号').trim() || 'QQ账号'
+      };
+    }
     const displayName = String(status.nickname || status.display_name || status.name || '').trim();
     const account = this.db.activateQQAccount(identity, displayName);
     return {
@@ -343,20 +388,24 @@ module.exports = function installAccountWorkspaceSupport(DB, BrowserManager) {
   BrowserManager.prototype.getPublishingLoginStatus = async function getPublishingLoginStatusWithAccount() {
     const status = await originalGetPublishingLoginStatus.call(this);
     if (!status?.loggedIn) return status;
-    return this.bindLoggedInQQAccount(status);
+    return this.bindLoggedInQQAccount(status, { freshLogin: false, source: 'status' });
   };
 
   const originalBeginPublishingLogin = BrowserManager.prototype.beginPublishingLogin;
   BrowserManager.prototype.beginPublishingLogin = async function beginPublishingLoginWithAccount() {
     const result = await originalBeginPublishingLogin.call(this);
-    if (result?.alreadyLoggedIn || result?.loggedIn || result?.valid) return this.bindLoggedInQQAccount(result);
+    if (result?.alreadyLoggedIn || result?.loggedIn || result?.valid) {
+      return this.bindLoggedInQQAccount(result, { freshLogin: false, source: 'begin-existing' });
+    }
     return result;
   };
 
   const originalPollPublishingLogin = BrowserManager.prototype.pollPublishingLogin;
   BrowserManager.prototype.pollPublishingLogin = async function pollPublishingLoginWithAccount() {
     const result = await originalPollPublishingLogin.call(this);
-    if (result?.loggedIn || result?.valid) return this.bindLoggedInQQAccount(result);
+    if (result?.loggedIn || result?.valid) {
+      return this.bindLoggedInQQAccount(result, { freshLogin: true, source: 'poll-token' });
+    }
     return result;
   };
 };
