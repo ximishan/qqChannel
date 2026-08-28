@@ -51,3 +51,9 @@ body:has(#tasks.active){overflow:hidden}
 #tasks.active>.pagination{flex:0 0 auto;margin-top:10px;padding-bottom:2px}
 #tasks .table-wrap thead{position:sticky;top:0;z-index:3}
 #tasks .table-wrap th{position:sticky;top:0;z-index:3;box-shadow:0 1px 0 #edf1f6}
+
+/* 日志页：上方筛选/下拉/刷新区域固定，仅日志内容滚动 */
+body:has(#logs.active){overflow:hidden}
+#logs.active{display:flex;flex-direction:column;height:calc(100vh - 146px);min-height:0;padding-bottom:0}
+#logs.active>.actionbar{flex:0 0 auto;position:sticky;top:0;z-index:4;background:var(--bg);padding-bottom:2px}
+#logs.active>#logBox{flex:1 1 auto;min-height:0;height:auto;margin:0;overflow:auto;overscroll-behavior:contain}
