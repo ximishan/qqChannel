@@ -16,8 +16,14 @@ function normalizeOwner(member = {}, guild = {}) {
     guildId: guild.guildId,
     guildNumber: guild.guildNumber,
     guildName: guild.name,
-    tinyId: text(user.tiny_id ?? user.tinyId ?? user.user_id ?? user.userId ?? member.tiny_id ?? member.tinyId),
-    nickname: text(user.nickname ?? user.nick ?? user.name ?? member.nickname ?? member.nick ?? member.name)
+    tinyId: text(
+      user.tinyid ?? user.tiny_id ?? user.tinyId ?? user.user_id ?? user.userId ??
+      member.tinyid ?? member.tiny_id ?? member.tinyId
+    ),
+    nickname: text(
+      user['昵称'] ?? user.nickname ?? user.nick ?? user.name ??
+      member['昵称'] ?? member.nickname ?? member.nick ?? member.name
+    )
   };
 }
 
