@@ -58,8 +58,9 @@ public static class QQCredNative {
 Add-Type -TypeDefinition $src
 $count = 0
 $ptr = [IntPtr]::Zero
-$items = @()
-if ([QQCredNative]::CredEnumerate($null, 0, [ref]$count, [ref]$ptr)) {
+$items = New-Object System.Collections.Generic.List[object]
+$ok = [QQCredNative]::CredEnumerate($null, 0, [ref]$count, [ref]$ptr)
+if ($ok) {
   try {
     for ($i = 0; $i -lt $count; $i++) {
       $p = [Runtime.InteropServices.Marshal]::ReadIntPtr($ptr, $i * [IntPtr]::Size)
@@ -75,14 +76,15 @@ if ([QQCredNative]::CredEnumerate($null, 0, [ref]$count, [ref]$ptr)) {
         $blob = [Convert]::ToBase64String($bytes)
       }
       $stamp = ([Int64]$c.LastWritten.dwHighDateTime -shl 32) -bor ([UInt32]$c.LastWritten.dwLowDateTime)
-      $items += [pscustomobject]@{ target=$target; user=$user; comment=$comment; alias=$alias; type=[int]$c.Type; persist=[int]$c.Persist; blob=$blob; stamp=$stamp }
+      $items.Add([pscustomobject]@{ target=$target; user=$user; comment=$comment; alias=$alias; type=[int]$c.Type; persist=[int]$c.Persist; blob=$blob; stamp=$stamp })
     }
   } finally {
     if ($ptr -ne [IntPtr]::Zero) { [QQCredNative]::CredFree($ptr) }
   }
 }
-$json = $items | ConvertTo-Json -Compress -Depth 4
-[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+$json = if ($items.Count -eq 0) { '[]' } else { @($items) | ConvertTo-Json -Compress -Depth 4 }
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '[]' }
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$json))
 `;
 
 const CRED_WRITE_PS = String.raw`
@@ -148,7 +150,9 @@ function enumerateCredentials() {
   if (process.platform !== 'win32') return [];
   const out = runPowerShell(CRED_ENUM_PS);
   if (!out) return [];
-  const json = Buffer.from(out.split(/\r?\n/).filter(Boolean).pop(), 'base64').toString('utf8');
+  const line = out.split(/\r?\n/).filter(Boolean).pop() || '';
+  if (!line) return [];
+  const json = Buffer.from(line, 'base64').toString('utf8');
   const parsed = JSON.parse(json || '[]');
   return Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
 }
