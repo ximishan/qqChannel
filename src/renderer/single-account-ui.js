@@ -135,13 +135,14 @@
     const button = document.querySelector('#btnLogoutQQ');
     if (!button) return;
     button.addEventListener('click', async () => {
-      if (!confirm('确定退出当前 QQ 账号？\n\n单账号模式下，退出成功后会清空当前账号的频道分组、已导入频道、任务和日志，避免切换到其他 QQ 后继续显示旧账号数据。运行参数会保留。')) return;
+      if (!confirm('确定退出当前 QQ 账号？\n\n当前账号的频道分组、频道、任务和历史记录都会保留，并绑定到该账号ID。以后重新登录同一个 QQ 会自动恢复。')) return;
       button.disabled = true;
       const status = document.querySelector('#loginStatus');
       if (status) status.textContent = '登录状态：正在退出...';
       try {
-        await window.api.logoutQQ();
-        alert('已退出当前 QQ，并已清空上一账号的频道和任务数据。');
+        const result = await window.api.logoutQQ();
+        const suffix = result?.accountId ? `（本地账号 #${result.accountId}）` : '';
+        alert(`已退出当前 QQ${suffix}。本地频道和任务已保留。`);
         window.location.reload();
       } catch (error) {
         alert(`退出失败：${String(error?.message || error)}`);
