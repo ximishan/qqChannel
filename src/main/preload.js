@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   addChannel: (data) => ipcRenderer.invoke('channels:add', data),
   updateChannelName: (data) => ipcRenderer.invoke('channels:updateName', data),
   deleteChannel: (id) => ipcRenderer.invoke('channels:delete', id),
+  listRemoteChannels: () => ipcRenderer.invoke('channels:remoteList'),
+  importRemoteChannels: (data) => ipcRenderer.invoke('channels:importRemote', data),
 
   listTasks: (data) => ipcRenderer.invoke('tasks:list', data),
   getPendingTaskSummary: (instanceId) => ipcRenderer.invoke('tasks:pendingSummary', instanceId),
@@ -50,3 +52,5 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('publish:update', listener);
   }
 });
+
+require('./channel-sync-preload');
