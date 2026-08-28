@@ -7,10 +7,8 @@
 
   const nativeAlert = window.alert.bind(window);
   const nativeConfirm = window.confirm.bind(window);
-  const nativePrompt = window.prompt.bind(window);
   window.alert = message => nativeAlert(replaceTerms(message));
   window.confirm = message => nativeConfirm(replaceTerms(message));
-  window.prompt = (message, defaultValue) => nativePrompt(replaceTerms(message), defaultValue);
 
   let accountRows = [];
   let accountStatuses = new Map();
@@ -51,8 +49,87 @@
       .account-status-summary.logged-in{background:#ecfdf5;color:#047857}
       .account-status-summary.logged-out{background:#fff7ed;color:#c2410c}
       .account-status-summary.checking{background:#eff6ff;color:#1d4ed8}
+      .account-dialog-mask{position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.28);display:flex;align-items:center;justify-content:center}
+      .account-dialog{width:360px;background:#fff;border-radius:12px;box-shadow:0 18px 50px rgba(15,23,42,.25);padding:18px}
+      .account-dialog-title{font-size:17px;font-weight:700;color:#0f172a;margin-bottom:14px}
+      .account-dialog-input{box-sizing:border-box;width:100%;height:40px;border:1px solid #cbd5e1;border-radius:8px;padding:0 10px;font-size:14px;outline:none}
+      .account-dialog-input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+      .account-dialog-error{min-height:20px;margin-top:6px;font-size:12px;color:#dc2626}
+      .account-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+      .account-dialog-actions button{padding:7px 14px;border-radius:8px}
+      .account-dialog-cancel{background:#fff;border:1px solid #cbd5e1;color:#334155}
+      .account-dialog-ok{background:#1677ff;border:1px solid #1677ff;color:#fff}
     `;
     document.head.appendChild(style);
+  }
+
+  function showAccountNameDialog(title, defaultValue = '') {
+    return new Promise(resolve => {
+      document.querySelector('.account-dialog-mask')?.remove();
+
+      const mask = document.createElement('div');
+      mask.className = 'account-dialog-mask';
+      mask.innerHTML = `
+        <div class="account-dialog" role="dialog" aria-modal="true">
+          <div class="account-dialog-title"></div>
+          <input class="account-dialog-input" type="text" maxlength="50" />
+          <div class="account-dialog-error"></div>
+          <div class="account-dialog-actions">
+            <button type="button" class="account-dialog-cancel">取消</button>
+            <button type="button" class="account-dialog-ok">确定</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(mask);
+
+      const dialog = mask.querySelector('.account-dialog');
+      const titleEl = mask.querySelector('.account-dialog-title');
+      const input = mask.querySelector('.account-dialog-input');
+      const errorEl = mask.querySelector('.account-dialog-error');
+      const cancel = mask.querySelector('.account-dialog-cancel');
+      const ok = mask.querySelector('.account-dialog-ok');
+
+      titleEl.textContent = title;
+      input.value = String(defaultValue || '');
+
+      const close = value => {
+        document.removeEventListener('keydown', onKeyDown, true);
+        mask.remove();
+        resolve(value);
+      };
+      const submit = () => {
+        const value = input.value.trim();
+        if (!value) {
+          errorEl.textContent = '账号名称不能为空';
+          input.focus();
+          return;
+        }
+        close(value);
+      };
+      const onKeyDown = event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          close(null);
+        } else if (event.key === 'Enter') {
+          event.preventDefault();
+          submit();
+        }
+      };
+
+      cancel.addEventListener('click', () => close(null));
+      ok.addEventListener('click', submit);
+      mask.addEventListener('click', event => {
+        if (event.target === mask) close(null);
+      });
+      dialog.addEventListener('click', event => event.stopPropagation());
+      input.addEventListener('input', () => { errorEl.textContent = ''; });
+      document.addEventListener('keydown', onKeyDown, true);
+
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
+    });
   }
 
   function statusText(status) {
@@ -170,13 +247,15 @@
     });
 
     document.querySelector('#btnAddAccount')?.addEventListener('click', async () => {
-      const accounts = await window.api.listAccounts();
-      const name = prompt('新账号名称', `QQ账号${accounts.length + 1}`);
-      if (name == null) return;
-      const clean = String(name).trim();
-      if (!clean) return alert('账号名称不能为空');
       try {
-        await window.api.createAccount(clean);
+        const accounts = await window.api.listAccounts();
+        const name = await showAccountNameDialog('新增QQ账号', `QQ账号${accounts.length + 1}`);
+        if (name == null) return;
+        const created = await window.api.createAccount(name);
+        accountRows.push(created);
+        activeAccountId = Number(created.id);
+        accountStatuses.set(activeAccountId, { id: activeAccountId, loggedIn: false, valid: false });
+        renderAccountOptions();
         location.reload();
       } catch (error) {
         alert(`新增QQ账号失败：${error?.message || error}`);
@@ -188,20 +267,17 @@
       const account = accountRows.find(item => Number(item.id) === accountId);
       const currentName = account?.name || '';
       if (!accountId) return;
-      const name = prompt('修改当前QQ账号名称', currentName);
-      if (name == null) return;
-      const clean = String(name).trim();
-      if (!clean) return alert('账号名称不能为空');
       try {
-        await window.api.renameAccount({ id: accountId, name: clean });
-        if (account) account.name = clean;
+        const name = await showAccountNameDialog('修改当前QQ账号名称', currentName);
+        if (name == null) return;
+        const renamed = await window.api.renameAccount({ id: accountId, name });
+        if (account) account.name = renamed?.name || name;
         renderAccountOptions();
       } catch (error) {
         alert(`修改账号名称失败：${error?.message || error}`);
       }
     });
 
-    // 当前账号扫码完成或手动检测之后，同步刷新整个账号列表的登录状态。
     document.querySelector('#btnCheckLogin')?.addEventListener('click', () => setTimeout(refreshAccountStatuses, 600));
     document.querySelector('#btnPollPublisherLogin')?.addEventListener('click', () => setTimeout(refreshAccountStatuses, 1200));
 
