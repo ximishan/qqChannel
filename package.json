@@ -2,7 +2,7 @@
   "name": "腾讯频道发布工具",
   "version": "0.3.1",
   "description": "腾讯频道发布工具",
-  "main": "src/main/main.js",
+  "main": "src/main/bootstrap.js",
   "scripts": {
     "postinstall": "electron-builder install-app-deps",
     "start": "electron .",
