@@ -41,10 +41,18 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
+function schedulerScopeId(fallbackInstanceId = 0) {
+  const filteredGroupId = Math.max(0, Math.floor(Number(db?.getSetting('task_list_group_filter', '0')) || 0));
+  return filteredGroupId > 0 ? filteredGroupId : 0;
+}
+
 function schedulerIsBusy(instanceId) {
   if (!scheduler) return false;
-  const state = scheduler.getState(instanceId);
-  return ['running', 'waiting', 'paused'].includes(state.status) || Boolean(state.currentTaskId);
+  const ids = [...new Set([Number(instanceId) || 0, 0])];
+  return ids.some(id => {
+    const state = scheduler.getState(id);
+    return ['running', 'waiting', 'paused'].includes(state.status) || Boolean(state.currentTaskId);
+  });
 }
 
 async function hidePublishingBrowser(instanceId) {
@@ -64,7 +72,7 @@ function registerIPC() {
   ipcMain.handle('instances:summary', (_, id) => db.getInstanceSummary(id));
   ipcMain.handle('instances:delete', async (_, id) => {
     const instanceId = Number(id);
-    if (schedulerIsBusy(instanceId)) throw new Error('该频道分组的发布队列正在运行，请先停止队列');
+    if (schedulerIsBusy(instanceId)) throw new Error('发布队列正在运行，请先停止队列');
     const summary = db.getInstanceSummary(instanceId);
     if (Number(summary.running_task_count) > 0) throw new Error('该频道分组仍有正在发布的任务，请等待任务完成');
     await browserManager.destroyInstance(instanceId);
@@ -79,13 +87,13 @@ function registerIPC() {
   ipcMain.handle('channels:delete', (_, id) => db.deleteChannel(id));
 
   ipcMain.handle('tasks:list', (_, data) => db.listTasks(data.instanceId, data.page, data.pageSize));
-  ipcMain.handle('tasks:pendingSummary', (_, instanceId) => db.getPendingTaskSummary(instanceId));
+  ipcMain.handle('tasks:pendingSummary', (_, instanceId) => db.getPendingTaskSummary(schedulerScopeId(instanceId)));
   ipcMain.handle('tasks:create', (_, data) => db.createTask(data.instanceId, data.title, data.body, data.mediaPath, data.channelIds, data.mediaType, data.scheduledAt, data.intervalMinSeconds, data.intervalMaxSeconds));
   ipcMain.handle('tasks:deleteMany', (_, taskIds) => db.deleteTasks(taskIds));
   ipcMain.handle('tasks:run', async (_, taskId) => {
     const task = db.getTask(taskId);
     if (!task) throw new Error('任务不存在');
-    if (schedulerIsBusy(task.instance_id)) throw new Error('当前频道分组的发布队列正在运行，请先停止队列后再手动执行任务');
+    if (schedulerIsBusy(task.instance_id)) throw new Error('发布队列正在运行，请先停止队列后再手动执行任务');
     if (!task.targets || task.targets.length === 0) throw new Error('当前任务没有目标频道，无法执行');
     const executableTargets = task.targets.filter(target => target.status !== 'success');
     if (executableTargets.length === 0) throw new Error(`任务 #${task.id} 已经全部发布成功`);
@@ -95,7 +103,7 @@ function registerIPC() {
   ipcMain.handle('tasks:retryFailed', async (_, taskId) => {
     const before = db.getTask(taskId);
     if (!before) throw new Error('任务不存在');
-    if (schedulerIsBusy(before.instance_id)) throw new Error('当前频道分组的发布队列正在运行，请先停止队列');
+    if (schedulerIsBusy(before.instance_id)) throw new Error('发布队列正在运行，请先停止队列');
     if (!before.targets?.some(target => target.status === 'failed')) throw new Error(`任务 #${taskId} 没有失败的目标频道`);
     db.resetFailedTargets(taskId);
     const task = db.getTask(taskId);
@@ -103,11 +111,19 @@ function registerIPC() {
     return browserManager.publishTask(task);
   });
 
-  ipcMain.handle('scheduler:start', async (_, instanceId) => { await hidePublishingBrowser(instanceId); return scheduler.start(instanceId); });
-  ipcMain.handle('scheduler:pause', (_, instanceId) => scheduler.pause(instanceId));
-  ipcMain.handle('scheduler:resume', async (_, instanceId) => { await hidePublishingBrowser(instanceId); return scheduler.resume(instanceId); });
-  ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(instanceId));
-  ipcMain.handle('scheduler:state', (_, instanceId) => scheduler.getState(instanceId));
+  ipcMain.handle('scheduler:start', async (_, instanceId) => {
+    const scopeId = schedulerScopeId(instanceId);
+    await hidePublishingBrowser(scopeId);
+    return scheduler.start(scopeId);
+  });
+  ipcMain.handle('scheduler:pause', (_, instanceId) => scheduler.pause(schedulerScopeId(instanceId)));
+  ipcMain.handle('scheduler:resume', async (_, instanceId) => {
+    const scopeId = schedulerScopeId(instanceId);
+    await hidePublishingBrowser(scopeId);
+    return scheduler.resume(scopeId);
+  });
+  ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(schedulerScopeId(instanceId)));
+  ipcMain.handle('scheduler:state', (_, instanceId) => scheduler.getState(schedulerScopeId(instanceId)));
 
   ipcMain.handle('selectors:list', () => db.getSelectors());
   ipcMain.handle('selectors:save', (_, data) => db.saveSelector(data.key, data.value, data.timeout));
