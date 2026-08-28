@@ -224,20 +224,53 @@ class TencentChannelCli {
     return channels;
   }
 
-  async resolveChannel(channel) {
-    const number = String(channel.guild_number || '').trim() ||
-      (String(channel.url || '').match(/\/g\/(pd\d+)/i)?.[1] || '');
-    const guilds = await this.listGuilds();
-    const guild = guilds.find(item => item.guildNumber.toLowerCase() === number.toLowerCase()) ||
-      guilds.find(item => item.name === String(channel.name || '').trim());
-    if (!guild) throw new Error(`授权账号中未找到频道“${channel.name}”，请确认频道 URL 和 QQ 授权账号`);
+  normalizeLocalChannel(channel = {}) {
+    const name = String(channel.channel_name ?? channel.name ?? '').trim();
+    const url = String(channel.channel_url ?? channel.url ?? '').trim();
+    const storedGuildNumber = String(channel.guild_number || '').trim();
+    const guildNumber = storedGuildNumber || (url.match(/\/g\/(pd\d+)/i)?.[1] || '');
+    return { name, url, guildNumber };
+  }
 
-    const channels = await this.listChannels(guild.guildId);
+  async resolveChannel(channel) {
+    const local = this.normalizeLocalChannel(channel);
+    let guilds = await this.listGuilds();
+    const findGuild = () => guilds.find(item =>
+      local.guildNumber && String(item.guildNumber || '').toLowerCase() === local.guildNumber.toLowerCase()
+    ) || guilds.find(item => local.name && String(item.name || '').trim() === local.name);
+
+    let guild = findGuild();
+    if (!guild) {
+      // 授权状态或频道列表刚发生变化时，旧缓存可能已经过期；强制刷新一次再判断。
+      guilds = await this.listGuilds(true);
+      guild = findGuild();
+    }
+
+    if (!guild) {
+      const visible = guilds.slice(0, 12).map(item => `${item.name}(${item.guildNumber || '无频道号'})`).join('、');
+      const error = new Error(
+        `授权账号中未找到频道“${local.name || '未知频道'}”；` +
+        `本地URL=${local.url || '未提供'}；解析频道号=${local.guildNumber || '未解析'}；` +
+        `授权账号可见频道数=${guilds.length}` +
+        `${visible ? `；可见频道=${visible}` : ''}。请确认频道 URL 和 QQ 授权账号`
+      );
+      error.code = 'CHANNEL_NOT_FOUND';
+      error.retryable = false;
+      throw error;
+    }
+
+    const channels = await this.listChannels(guild.guildId, true);
     const preferred = channels.find(item => item.name === '全部') || channels[0];
-    if (!preferred) throw new Error(`频道“${channel.name}”没有可发布的帖子版块`);
+    if (!preferred) {
+      const error = new Error(`频道“${local.name || guild.name}”没有可发布的帖子版块`);
+      error.code = 'CHANNEL_BOARD_NOT_FOUND';
+      error.retryable = false;
+      throw error;
+    }
+
     return {
       guildId: guild.guildId,
-      guildNumber: guild.guildNumber || number,
+      guildNumber: guild.guildNumber || local.guildNumber,
       channelId: preferred.channelId,
       channelName: preferred.name
     };
