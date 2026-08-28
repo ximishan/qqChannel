@@ -46,7 +46,7 @@ function clearAccountLoginMarker(userDataPath, accountId) {
 
 function clearAccountCredentials(userDataPath, accountId) {
   const home = accountHome(userDataPath, accountId);
-  for (const item of ['.qqcli', 'qq-channel-login.png', '.publisher-login-ok']) {
+  for (const item of ['.qqcli', 'credentials.env', 'qq-channel-login.png', '.publisher-login-ok']) {
     try {
       fs.rmSync(path.join(home, item), { recursive: true, force: true });
     } catch (_) {}
@@ -81,8 +81,6 @@ async function getAccountLoginStatus(accountId, options = {}) {
   if (!id) return { loggedIn: false, valid: false, message: 'QQ账号不存在' };
   const userDataPath = app.getPath('userData');
 
-  // 只有真正完成过本账号扫码授权的账号，才允许进入 CLI 状态检测。
-  // 这是第二道隔离：即使 CLI/系统目录里意外残留其它账号 token，也不能把未登录账号判成已登录。
   if (!hasAccountLoginMarker(userDataPath, id) && !options.ignoreMarker) {
     return { loggedIn: false, valid: false, message: '该QQ账号尚未登录' };
   }
@@ -144,7 +142,6 @@ function installMultiAccountSupport(DB, BrowserManager) {
     const schemaVersion = this.db.prepare("SELECT value FROM settings WHERE key='multi_account_schema_v1'").get()?.value;
     if (schemaVersion !== '1') {
       const reset = this.db.transaction(() => {
-        // 用户已确认无需兼容旧数据：首次升级到多账号结构时直接清理旧分组、频道和任务。
         this.db.prepare('DELETE FROM task_targets').run();
         this.db.prepare('DELETE FROM tasks').run();
         this.db.prepare('DELETE FROM channels').run();
@@ -169,8 +166,6 @@ function installMultiAccountSupport(DB, BrowserManager) {
       accounts = this.db.prepare('SELECT * FROM accounts ORDER BY id ASC').all();
     }
 
-    // 前几版多账号实现可能把同一个全局 token 复制进了多个账号目录。
-    // 用户已明确不需要保留旧登录数据，所以 v2 首次启动时只清空多账号登录凭证，强制每个账号重新扫码一次。
     const credentialVersion = this.db.prepare("SELECT value FROM settings WHERE key='account_credential_isolation_v2'").get()?.value;
     if (credentialVersion !== '1') {
       const accountsRoot = path.join(app.getPath('userData'), 'qq-accounts');
@@ -258,22 +253,10 @@ function installMultiAccountSupport(DB, BrowserManager) {
     const userDataPath = this.userDataPath;
     clearAccountCredentials(userDataPath, accountId);
     const cli = getAccountCli(userDataPath, accountId);
-    const qrcodePath = path.join(accountHome(userDataPath, accountId), 'qq-channel-login.png');
 
-    // 不调用 cli.beginLogin()，因为它会先执行 login status；在 Windows 上如果外部 CLI
-    // 有残留 token，可能错误地提前返回“已登录”。这里直接发起新的扫码流程。
-    const data = await cli.run(['login', '--json', '--qrcode-path', qrcodePath], null, { timeoutMs: 30000 });
-    const returnedPath = String(data.qrcode_path || qrcodePath);
-    let qrDataUrl = '';
-    if (fs.existsSync(returnedPath)) {
-      qrDataUrl = `data:image/png;base64,${fs.readFileSync(returnedPath).toString('base64')}`;
-    }
-    return {
-      ...data,
-      qrcodePath: returnedPath,
-      qrDataUrl,
-      verificationUri: String(data.verification_uri || data.verification_url || '')
-    };
+    // 统一走 TencentChannelCli.beginLogin()。qqcli-account-token.js 已经为多账号登录
+    // 强制加入 --yes，并在登录完成后保存每个账号独立的 credentials.env。
+    return cli.beginLogin();
   };
 
   BrowserManager.prototype.pollPublishingLogin = async function pollScopedPublishingLogin() {
