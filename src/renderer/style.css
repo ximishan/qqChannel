@@ -42,3 +42,12 @@
 #taskDialog .task-instance-channels label{margin:0!important;min-width:0}
 #taskDialog .task-instance-channels .task-channel-checkbox+span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:980px){#taskDialog .modal-grid{grid-template-columns:1fr}#taskDialog .target-area{border-left:0;border-top:1px solid var(--line);padding-left:0;padding-top:14px;min-height:300px}#taskDialog .target-head{grid-template-columns:1fr auto}#taskDialog .target-summary{grid-column:1/-1;grid-row:2;text-align:left}}
+
+/* 发布任务页：上方操作区固定，仅任务列表区域滚动 */
+body:has(#tasks.active){overflow:hidden}
+#tasks.active{display:flex;flex-direction:column;height:calc(100vh - 146px);min-height:0;padding-bottom:0}
+#tasks.active>.actionbar,#tasks.active>#publishProgress,#tasks.active>#taskListFilterBar{flex:0 0 auto}
+#tasks.active>.table-wrap{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain}
+#tasks.active>.pagination{flex:0 0 auto;margin-top:10px;padding-bottom:2px}
+#tasks .table-wrap thead{position:sticky;top:0;z-index:3}
+#tasks .table-wrap th{position:sticky;top:0;z-index:3;box-shadow:0 1px 0 #edf1f6}
