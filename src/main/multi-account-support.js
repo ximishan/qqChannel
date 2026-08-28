@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { AsyncLocalStorage } = require('async_hooks');
-const { ipcMain } = require('electron');
+const { app, ipcMain } = require('electron');
 const { TencentChannelCli } = require('./tencent-channel-cli');
 
 let dbRef = null;
@@ -41,6 +41,40 @@ function setActiveAccountId(id) {
   if (!normalized) throw new Error('QQ账号不存在');
   activeAccountId = normalized;
   return activeAccountId;
+}
+
+async function listAccountLoginStatuses() {
+  if (!dbRef) return [];
+  const accounts = dbRef.listAccounts();
+  const userDataPath = app.getPath('userData');
+  const results = [];
+
+  // Windows 下账号凭证需要通过 ~/.qqcli 沙箱串行交换，因此这里也明确逐个检测，
+  // 避免账号状态检查互相覆盖。
+  for (const account of accounts) {
+    const accountId = Number(account.id);
+    try {
+      const status = await getAccountCli(userDataPath, accountId).loginStatus();
+      results.push({
+        id: accountId,
+        name: account.name,
+        loggedIn: Boolean(status?.loggedIn),
+        valid: Boolean(status?.valid),
+        message: String(status?.message || ''),
+        nickname: String(status?.nickname || status?.user_name || status?.name || '')
+      });
+    } catch (error) {
+      results.push({
+        id: accountId,
+        name: account.name,
+        loggedIn: false,
+        valid: false,
+        message: String(error?.message || error || ''),
+        nickname: ''
+      });
+    }
+  }
+  return results;
 }
 
 function installMultiAccountSupport(DB, BrowserManager) {
@@ -152,6 +186,7 @@ function installMultiAccountSupport(DB, BrowserManager) {
   };
 
   ipcMain.handle('accounts:list', () => dbRef?.listAccounts() || []);
+  ipcMain.handle('accounts:statuses', () => listAccountLoginStatuses());
   ipcMain.handle('accounts:active', () => getActiveAccountId());
   ipcMain.handle('accounts:setActive', (_, id) => {
     if (!dbRef) throw new Error('数据库尚未初始化');
@@ -177,5 +212,6 @@ module.exports = {
   getActiveAccountId,
   setActiveAccountId,
   getAccountCli,
-  accountHome
+  accountHome,
+  listAccountLoginStatuses
 };
