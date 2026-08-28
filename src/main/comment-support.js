@@ -9,7 +9,10 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
     this.db.prepare(`
       UPDATE tasks
       SET comment = COALESCE(comment, body),
-          body = CASE WHEN TRIM(COALESCE(title,'')) <> '' THEN title ELSE '' END
+          body = CASE
+            WHEN media_type='text' AND TRIM(COALESCE(title,'')) <> '' THEN title
+            ELSE ''
+          END
       WHERE status IN ('pending','failed') AND comment IS NULL
     `).run();
 
@@ -39,7 +42,9 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
     this.db.prepare(`UPDATE selector_configs SET name='帖子正文编辑器 ProseMirror' WHERE key='body_input'`).run();
   };
 
-  // 新任务：任务标题作为帖子正文；“评论”单独保存，发布成功后再发到评论区。
+  // 文本任务：任务标题就是发布内容。
+  // 图片/视频任务：任务标题只做本地任务名，不写进帖子正文。
+  // “评论”始终单独保存，帖子发布成功后再发送到评论区。
   DB.prototype.createTask = function createTaskWithComment(
     instanceId,
     title,
@@ -54,7 +59,7 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
     const type = ['text', 'image', 'video'].includes(mediaType) ? mediaType : 'video';
     const normalizedTitle = String(title || '').trim();
     const normalizedComment = String(comment || '').trim();
-    const normalizedBody = normalizedTitle;
+    const normalizedBody = type === 'text' ? normalizedTitle : '';
 
     if (type === 'text' && !normalizedBody) throw new Error('纯文本任务必须填写任务标题/发布内容');
     if (type === 'image' && !mediaPath) throw new Error('图片任务必须选择图片文件');
