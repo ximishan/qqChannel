@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
+  listAccountStatuses: () => ipcRenderer.invoke('accounts:statuses'),
   getActiveAccount: () => ipcRenderer.invoke('accounts:active'),
   setActiveAccount: (id) => ipcRenderer.invoke('accounts:setActive', id),
   createAccount: (name) => ipcRenderer.invoke('accounts:create', name),
