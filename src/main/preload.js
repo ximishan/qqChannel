@@ -1,13 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  listAccounts: () => ipcRenderer.invoke('accounts:list'),
-  listAccountStatuses: () => ipcRenderer.invoke('accounts:statuses'),
-  getActiveAccount: () => ipcRenderer.invoke('accounts:active'),
-  setActiveAccount: (id) => ipcRenderer.invoke('accounts:setActive', id),
-  createAccount: (name) => ipcRenderer.invoke('accounts:create', name),
-  renameAccount: (data) => ipcRenderer.invoke('accounts:rename', data),
-
   listInstances: () => ipcRenderer.invoke('instances:list'),
   createInstance: (name) => ipcRenderer.invoke('instances:create', name),
   updateInstanceName: (data) => ipcRenderer.invoke('instances:updateName', data),
@@ -15,6 +8,8 @@ contextBridge.exposeInMainWorld('api', {
   deleteInstance: (id) => ipcRenderer.invoke('instances:delete', id),
 
   listChannels: (instanceId) => ipcRenderer.invoke('channels:list', instanceId),
+  listChannelAssignments: () => ipcRenderer.invoke('channels:overview'),
+  moveChannel: (data) => ipcRenderer.invoke('channels:move', data),
   addChannel: (data) => ipcRenderer.invoke('channels:add', data),
   updateChannelName: (data) => ipcRenderer.invoke('channels:updateName', data),
   deleteChannel: (id) => ipcRenderer.invoke('channels:delete', id),
@@ -38,8 +33,9 @@ contextBridge.exposeInMainWorld('api', {
   saveSelector: (data) => ipcRenderer.invoke('selectors:save', data),
   testSelector: (data) => ipcRenderer.invoke('selectors:test', data),
 
-  openLogin: (instanceId) => ipcRenderer.invoke('browser:login', instanceId),
-  getLoginStatus: (instanceId) => ipcRenderer.invoke('browser:status', instanceId),
+  openLogin: () => ipcRenderer.invoke('browser:login'),
+  getLoginStatus: () => ipcRenderer.invoke('browser:status'),
+  logoutQQ: () => ipcRenderer.invoke('browser:logout'),
   pollPublisherLogin: () => ipcRenderer.invoke('publisher:pollLogin'),
   setBrowserView: (data) => ipcRenderer.invoke('browser:view', data),
   browserHome: (instanceId) => ipcRenderer.invoke('browser:home', instanceId),
