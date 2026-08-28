@@ -2,23 +2,6 @@ function text(value) {
   return String(value == null ? '' : value).trim();
 }
 
-function sanitize(value, depth = 0) {
-  if (depth > 6) return '[max-depth]';
-  if (value == null) return value;
-  if (Array.isArray(value)) return value.map(item => sanitize(item, depth + 1));
-  if (typeof value !== 'object') return value;
-
-  const out = {};
-  for (const [key, child] of Object.entries(value)) {
-    if (/token|cookie|credential|secret|authorization|password|passwd|keychain/i.test(key)) {
-      out[key] = '[REDACTED]';
-      continue;
-    }
-    out[key] = sanitize(child, depth + 1);
-  }
-  return out;
-}
-
 function normalizeGuild(item = {}) {
   return {
     guildId: text(item.guild_id ?? item.guildId),
@@ -59,7 +42,7 @@ async function getGuildOwner(manager, guild) {
       manager.db.log(
         'info',
         `[QQ账号诊断] get-guild-member-list 频道=${guild.name || guild.guildNumber || guild.guildId} ` +
-        `guild_id=${guild.guildId} page=${page + 1} 返回=${JSON.stringify(sanitize(data))}`
+        `guild_id=${guild.guildId} page=${page + 1} 原始返回=${JSON.stringify(data)}`
       );
     } catch (_) {}
 
