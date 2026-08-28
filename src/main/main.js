@@ -153,8 +153,9 @@ function registerIPC() {
   ipcMain.handle('selectors:save', (_, data) => db.saveSelector(data.key, data.value, data.timeout));
   ipcMain.handle('selectors:test', async (_, data) => browserManager.testSelector(data.instanceId, data.selector, data.url));
 
-  ipcMain.handle('browser:login', async (_, instanceId) => browserManager.openLogin(instanceId));
-  ipcMain.handle('browser:status', async (_, instanceId) => browserManager.getLoginStatus(instanceId));
+  ipcMain.handle('browser:login', async () => browserManager.beginPublishingLogin());
+  ipcMain.handle('browser:status', async () => browserManager.getPublishingLoginStatus());
+  ipcMain.handle('publisher:pollLogin', async () => browserManager.pollPublishingLogin());
   ipcMain.handle('browser:view', async (_, data) => browserManager.setViewState(data));
   ipcMain.handle('browser:home', async (_, instanceId) => browserManager.navigate(instanceId));
   ipcMain.handle('browser:back', async (_, instanceId) => browserManager.goBack(instanceId));

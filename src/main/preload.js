@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
 
   openLogin: (instanceId) => ipcRenderer.invoke('browser:login', instanceId),
   getLoginStatus: (instanceId) => ipcRenderer.invoke('browser:status', instanceId),
+  pollPublisherLogin: () => ipcRenderer.invoke('publisher:pollLogin'),
   setBrowserView: (data) => ipcRenderer.invoke('browser:view', data),
   browserHome: (instanceId) => ipcRenderer.invoke('browser:home', instanceId),
   browserBack: (instanceId) => ipcRenderer.invoke('browser:back', instanceId),

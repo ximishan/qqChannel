@@ -68,7 +68,7 @@ async function loadInstances() {
     $('#channelList').innerHTML = '<div class="hint">请先新建实例，再向实例分配频道。</div>';
     $('#taskChannelList').innerHTML = '<div class="hint">请先新建实例并添加频道。</div>';
     $('#batchChannelList').innerHTML = '<div class="hint">请先新建实例并添加频道。</div>';
-    $('#taskBody').innerHTML = '<tr><td colspan="10" class="hint">请先新建实例。</td></tr>';
+    $('#taskBody').innerHTML = '<tr><td colspan="11" class="hint">请先新建实例。</td></tr>';
     $('#taskPageInfo').textContent = '第 1 / 1 页，共 0 条';
     $('#loginStatus').textContent = '登录状态：请先新建实例';
     $('#queueStatus').textContent = '队列：idle';
@@ -127,6 +127,7 @@ async function loadTasks(force = false) {
   $('#btnTaskNext').disabled = taskPage >= taskTotalPages;
   const snapshot = JSON.stringify(rows.map(t => [
     t.id,
+    t.instance_id,
     t.status,
     t.finished_at,
     t.scheduled_at,
@@ -142,15 +143,16 @@ async function loadTasks(force = false) {
     <tr>
       <td><input type="checkbox" class="task-row-select" value="${t.id}" ${selectedTaskIds.has(t.id) ? 'checked' : ''}></td>
       <td>${t.id}</td>
+      <td class="instance-cell" title="${escapeAttr(instanceRows.find(item => Number(item.id) === Number(t.instance_id))?.name || `实例 #${t.instance_id}`)}">${escapeHtml(instanceRows.find(item => Number(item.id) === Number(t.instance_id))?.name || `实例 #${t.instance_id}`)}</td>
+      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}${x.last_error ? ` - ${x.last_error}` : ''}`).join('\n'))}"><div class="target-status-list">${renderTargetChips(t.targets)}</div></td>
       <td>${escapeHtml(t.title || '(无标题)')}</td>
       <td class="comment-cell" title="${escapeAttr(t.body || '')}">${escapeHtml(shortText(t.body || '—', 36))}</td>
-      <td title="${escapeHtml(t.media_path)}">${t.media_type === 'text' ? '—' : escapeHtml(fileName(t.media_path))}</td>
-      <td title="${escapeAttr(t.targets.map(x => `${x.channel_name}:${x.status}${x.retry_count ? `(重试${x.retry_count})` : ''}${x.last_error ? ` - ${x.last_error}` : ''}`).join('\n'))}"><div class="target-status-list">${renderTargetChips(t.targets)}</div></td>
+      <td class="material-cell" title="${escapeAttr(t.media_path)}"><span class="material-name">${t.media_type === 'text' ? '—' : escapeHtml(compactFileName(t.media_path))}</span></td>
       <td>${t.media_type === 'text' ? '文本' : (t.media_type === 'image' ? '图片' : '视频')}</td>
       <td class="status-${t.status}">${escapeHtml(t.status)}</td>
       <td>${t.scheduled_at ? escapeHtml(formatBeijingDateTime(t.scheduled_at)) : '立即'}</td>
       <td>${escapeHtml(formatBeijingDateTime(t.created_at, true))}</td>
-    </tr>`).join('') : '<tr><td colspan="10" class="hint">暂无任务。点击“新建发布任务”创建纯文本、图片或视频任务。</td></tr>';
+    </tr>`).join('') : '<tr><td colspan="11" class="hint">暂无任务。点击“新建发布任务”创建纯文本、图片或视频任务。</td></tr>';
 
   $$('.task-row-select').forEach(input => input.addEventListener('change', () => {
     const id = Number(input.value);
@@ -382,12 +384,49 @@ $('#btnDeleteInstance').addEventListener('click', async () => {
 
 $('#btnLogin').addEventListener('click', async () => {
   if (!currentInstanceId) return;
-  await activateTab('browser');
-  await window.api.openLogin(currentInstanceId);
-  await syncBrowserView();
-  $('#loginStatus').textContent = '登录状态：请在内置浏览器登录';
-  $('#loginStatus').style.background = '#fff7e6';
-  $('#loginStatus').style.color = '#c47b00';
+  const status = $('#loginStatus');
+  status.textContent = '登录状态：正在准备二维码...';
+  status.style.background = '#fff7e6';
+  status.style.color = '#c47b00';
+  try {
+    const result = await window.api.openLogin(currentInstanceId);
+    if (result?.alreadyLoggedIn || result?.loggedIn) {
+      await checkLoginStatus(false);
+      alert('QQ 频道发布授权已经登录，无需重复扫码。');
+      return;
+    }
+    const qr = $('#publisherLoginQr');
+    qr.src = result?.qrDataUrl || '';
+    qr.classList.toggle('hidden', !result?.qrDataUrl);
+    const link = $('#publisherLoginLink');
+    link.href = result?.verificationUri || '#';
+    link.classList.toggle('hidden', !result?.verificationUri);
+    $('#publisherLoginMessage').textContent = result?.qrDataUrl
+      ? '请使用手机 QQ 扫码，完成后点击“我已完成扫码”。'
+      : '二维码未能显示，请打开授权链接完成登录。';
+    $('#publisherLoginDialog').showModal();
+    status.textContent = '登录状态：等待扫码授权';
+  } catch (error) {
+    status.textContent = '登录状态：二维码获取失败';
+    alert(String(error?.message || error));
+  }
+});
+
+$('#btnPollPublisherLogin').addEventListener('click', async () => {
+  const button = $('#btnPollPublisherLogin');
+  button.disabled = true;
+  $('#publisherLoginMessage').textContent = '正在确认授权...';
+  try {
+    const result = await window.api.pollPublisherLogin();
+    if (!result?.loggedIn) throw new Error(result?.message || '尚未完成扫码授权');
+    $('#publisherLoginDialog').close();
+    await checkLoginStatus(false);
+    alert('QQ 频道发布授权登录成功。');
+  } catch (error) {
+    $('#publisherLoginMessage').textContent = `授权未完成：${String(error?.message || error)}`;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
@@ -702,6 +741,15 @@ window.addEventListener('resize', () => {
 });
 
 function fileName(p) { return String(p || '').split(/[\\/]/).pop(); }
+function compactFileName(p, maxLength = 28) {
+  const name = fileName(p);
+  if (name.length <= maxLength) return name;
+  const dotIndex = name.lastIndexOf('.');
+  const extension = dotIndex > 0 ? name.slice(dotIndex) : '';
+  const tailLength = Math.min(10 + extension.length, Math.floor(maxLength / 2));
+  const headLength = Math.max(8, maxLength - tailLength - 1);
+  return `${name.slice(0, headLength)}…${name.slice(-tailLength)}`;
+}
 function shortText(value, maxLength) {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;

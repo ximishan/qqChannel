@@ -560,8 +560,10 @@ class BrowserManager {
     if (this.db.getSetting('screenshot_on_error', '1') !== '1') return null;
     const p = path.join(this.screenshotDir(), `task-${taskId}-target-${targetId}-attempt-${attempt}-${Date.now()}.png`);
     const image = await webContents.capturePage().catch(() => null);
-    if (image) fs.writeFileSync(p, image.toPNG());
-    return image ? p : null;
+    const buffer = image ? image.toPNG() : null;
+    if (!buffer?.length) return null;
+    fs.writeFileSync(p, buffer);
+    return p;
   }
 
   async publishOneTarget(record, task, target, selectors, attempt) {

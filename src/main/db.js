@@ -227,7 +227,14 @@ class DB {
     const normalizedPage = Math.min(totalPages, Math.max(1, Math.floor(Number(page) || 1)));
     const offset = (normalizedPage - 1) * normalizedPageSize;
     const tasks = this.db.prepare('SELECT * FROM tasks WHERE instance_id=? ORDER BY id DESC LIMIT ? OFFSET ?').all(instanceId, normalizedPageSize, offset);
-    const getTargets = this.db.prepare(`SELECT tt.*, c.name AS channel_name, c.url AS channel_url FROM task_targets tt JOIN channels c ON c.id = tt.channel_id WHERE tt.task_id=? ORDER BY tt.id ASC`);
+    const getTargets = this.db.prepare(`
+      SELECT tt.*, c.name AS channel_name, c.url AS channel_url,
+             c.guild_id, c.guild_number, c.post_channel_id, c.post_channel_name
+      FROM task_targets tt
+      JOIN channels c ON c.id = tt.channel_id
+      WHERE tt.task_id=?
+      ORDER BY tt.id ASC
+    `);
     return {
       items: tasks.map(t => ({ ...t, targets: getTargets.all(t.id) })),
       page: normalizedPage,
@@ -270,7 +277,14 @@ class DB {
   getTask(id) {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id);
     if (!task) return null;
-    task.targets = this.db.prepare(`SELECT tt.*, c.name AS channel_name, c.url AS channel_url FROM task_targets tt JOIN channels c ON c.id = tt.channel_id WHERE tt.task_id=? ORDER BY tt.id ASC`).all(id);
+    task.targets = this.db.prepare(`
+      SELECT tt.*, c.name AS channel_name, c.url AS channel_url,
+             c.guild_id, c.guild_number, c.post_channel_id, c.post_channel_name
+      FROM task_targets tt
+      JOIN channels c ON c.id = tt.channel_id
+      WHERE tt.task_id=?
+      ORDER BY tt.id ASC
+    `).all(id);
     return task;
   }
 
