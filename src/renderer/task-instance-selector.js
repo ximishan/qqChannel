@@ -63,7 +63,7 @@
     const groups = selectedGroups();
     const channelCount = groups.reduce((sum, group) => sum + group.channels.length, 0);
     const summary = qs('#taskTargetSummary');
-    if (summary) summary.textContent = `已选 ${groups.length} 个实例 · ${channelCount} 个频道`;
+    if (summary) summary.textContent = `已选 ${groups.length} 个实例 · ${channelCount} 个频道 · 将创建 ${channelCount} 条任务`;
   }
 
   async function openTaskDialog() {
@@ -115,7 +115,7 @@
 
     const totalChannels = groups.reduce((sum, group) => sum + group.channels.length, 0);
     const instanceNames = groups.map(group => group.instance.name).join('、');
-    if (!confirm(`将为 ${groups.length} 个实例创建发布任务，共覆盖 ${totalChannels} 个绑定频道：\n\n${instanceNames}\n\n是否继续？`)) return;
+    if (!confirm(`将为 ${groups.length} 个实例创建任务：\n\n${instanceNames}\n\n共 ${totalChannels} 个频道，每个频道单独创建 1 条任务，共 ${totalChannels} 条任务。\n\n是否继续？`)) return;
 
     const button = qs('#btnSaveTask');
     if (button) {
@@ -124,18 +124,23 @@
     }
 
     try {
+      let createdCount = 0;
       for (const group of groups) {
-        await window.api.createTask({
-          instanceId: Number(group.instance.id),
-          title,
-          body: body || title,
-          mediaPath,
-          mediaType,
-          channelIds: group.channels.map(channel => Number(channel.id)),
-          scheduledAt,
-          intervalMinSeconds,
-          intervalMaxSeconds
-        });
+        for (const channel of group.channels) {
+          createdCount += 1;
+          if (button) button.textContent = `创建中 ${createdCount}/${totalChannels}`;
+          await window.api.createTask({
+            instanceId: Number(group.instance.id),
+            title,
+            body: body || title,
+            mediaPath,
+            mediaType,
+            channelIds: [Number(channel.id)],
+            scheduledAt,
+            intervalMinSeconds,
+            intervalMaxSeconds
+          });
+        }
       }
 
       qs('#taskDialog')?.close();
@@ -143,7 +148,7 @@
       if (qs('#taskTitle')) qs('#taskTitle').value = '';
       if (qs('#taskBodyText')) qs('#taskBodyText').value = '';
 
-      // 切换到第一个已选实例，让用户立即看到刚创建的任务。
+      // 切换到第一个已选实例，让用户立即看到该实例下按频道拆分后的任务。
       const firstInstanceId = Number(groups[0].instance.id);
       const instanceSelect = qs('#instanceSelect');
       if (instanceSelect && Number(instanceSelect.value) !== firstInstanceId) {
@@ -153,7 +158,7 @@
         qs('#btnRefreshTasks')?.click();
       }
 
-      alert(`已为 ${groups.length} 个实例创建任务，共 ${totalChannels} 个目标频道。\n每个实例生成 1 条独立任务，并使用该实例绑定的全部频道。`);
+      alert(`创建完成：${groups.length} 个实例，共 ${totalChannels} 个频道，已生成 ${totalChannels} 条独立任务。\n每个频道对应 1 条任务。`);
     } catch (error) {
       alert(`创建任务失败：${String(error?.message || error)}`);
     } finally {
