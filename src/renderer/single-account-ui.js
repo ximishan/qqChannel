@@ -153,7 +153,76 @@
     });
   }
 
+  function mountLoginGuard() {
+    const button = document.querySelector('#btnLogin');
+    if (!button || button.dataset.loginGuardMounted === '1') return;
+    button.dataset.loginGuardMounted = '1';
+    let busy = false;
+
+    button.addEventListener('click', async event => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (busy) return;
+
+      busy = true;
+      const originalText = button.textContent;
+      const status = document.querySelector('#loginStatus');
+      button.disabled = true;
+      button.textContent = '二维码加载中...';
+      if (status) {
+        status.textContent = '登录状态：正在准备二维码...';
+        status.style.background = '#fff7e6';
+        status.style.color = '#c47b00';
+      }
+
+      try {
+        const result = await window.api.openLogin();
+        if (result?.alreadyLoggedIn || result?.loggedIn) {
+          if (status) {
+            status.textContent = `已登录：${result.name || 'QQ账号'}`;
+            status.style.background = '#edf9f2';
+            status.style.color = '#17a663';
+          }
+          alert('QQ 频道发布授权已经登录，无需重复扫码。');
+          return;
+        }
+
+        const qr = document.querySelector('#publisherLoginQr');
+        const link = document.querySelector('#publisherLoginLink');
+        const message = document.querySelector('#publisherLoginMessage');
+        const dialog = document.querySelector('#publisherLoginDialog');
+        if (!result?.qrDataUrl && !result?.verificationUri) {
+          throw new Error(result?.message || '未获取到登录二维码');
+        }
+
+        if (qr) {
+          qr.src = result?.qrDataUrl || '';
+          qr.classList.toggle('hidden', !result?.qrDataUrl);
+        }
+        if (link) {
+          link.href = result?.verificationUri || '#';
+          link.classList.toggle('hidden', !result?.verificationUri);
+        }
+        if (message) {
+          message.textContent = result?.qrDataUrl
+            ? '请使用手机 QQ 扫码，完成后点击“我已完成扫码”。'
+            : '二维码未能显示，请打开授权链接完成登录。';
+        }
+        if (dialog && !dialog.open) dialog.showModal();
+        if (status) status.textContent = '登录状态：等待扫码授权';
+      } catch (error) {
+        if (status) status.textContent = '登录状态：二维码获取失败';
+        alert(String(error?.message || error));
+      } finally {
+        busy = false;
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }, true);
+  }
+
   function start() {
+    mountLoginGuard();
     mountLogout();
     const waitForSync = () => {
       mountOverview();
