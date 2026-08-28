@@ -104,4 +104,12 @@
       input.value = String(input.value || '').trim();
     }
   }, true);
+
+  // 任务列表默认展示全部任务；单独脚本提供频道分组筛选和 QQ 频道搜索。
+  if (!document.querySelector('script[data-task-list-filters]')) {
+    const script = document.createElement('script');
+    script.src = 'task-list-filters.js';
+    script.dataset.taskListFilters = '1';
+    document.body.appendChild(script);
+  }
 })();
