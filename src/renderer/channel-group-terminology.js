@@ -39,6 +39,11 @@
     normalizeControls();
   }
 
+  function removeEmbeddedBrowserTab() {
+    document.querySelector('.tab[data-tab="browser"]')?.remove();
+    document.querySelector('#browser')?.remove();
+  }
+
   async function fillCurrentGroupName() {
     const form = document.querySelector('#instanceForm');
     const input = document.querySelector('#instanceName');
@@ -69,6 +74,7 @@
   }
 
   normalizeAll();
+  removeEmbeddedBrowserTab();
 
   const observer = new MutationObserver((mutations) => {
     let controlsNeedNormalize = false;
