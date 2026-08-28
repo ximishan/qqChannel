@@ -33,7 +33,6 @@ $ErrorActionPreference = 'Stop'
 $src = @"
 using System;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
 public static class QQCredNative {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   public struct CREDENTIAL {
@@ -41,7 +40,7 @@ public static class QQCredNative {
     public UInt32 Type;
     public IntPtr TargetName;
     public IntPtr Comment;
-    public FILETIME LastWritten;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
     public UInt32 CredentialBlobSize;
     public IntPtr CredentialBlob;
     public UInt32 Persist;
