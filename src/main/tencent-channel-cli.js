@@ -102,10 +102,19 @@ class TencentChannelCli {
         commandArgs = ['/d', '/s', '/c', staticCommand];
       }
 
+      const isolatedEnv = { ...process.env };
+      if (this.userDataPath) {
+        fs.mkdirSync(this.userDataPath, { recursive: true });
+        // tencent-channel-cli 默认把凭证放在用户 Home 下的 .qqcli。
+        // 为每个 QQ 账号提供独立 Home，从根上隔离登录凭证和二维码缓存。
+        isolatedEnv.HOME = this.userDataPath;
+        isolatedEnv.USERPROFILE = this.userDataPath;
+      }
+
       const child = spawn(command, commandArgs, {
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env }
+        env: isolatedEnv
       });
       let stdout = '';
       let stderr = '';
@@ -241,7 +250,6 @@ class TencentChannelCli {
 
     let guild = findGuild();
     if (!guild) {
-      // 授权状态或频道列表刚发生变化时，旧缓存可能已经过期；强制刷新一次再判断。
       guilds = await this.listGuilds(true);
       guild = findGuild();
     }
