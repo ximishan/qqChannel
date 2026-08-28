@@ -22,6 +22,39 @@ function accountHome(userDataPath, accountId) {
   return dir;
 }
 
+function accountLoginMarker(userDataPath, accountId) {
+  return path.join(accountHome(userDataPath, accountId), '.publisher-login-ok');
+}
+
+function hasAccountLoginMarker(userDataPath, accountId) {
+  try {
+    return fs.existsSync(accountLoginMarker(userDataPath, accountId));
+  } catch (_) {
+    return false;
+  }
+}
+
+function setAccountLoginMarker(userDataPath, accountId) {
+  fs.writeFileSync(accountLoginMarker(userDataPath, accountId), String(Date.now()), 'utf8');
+}
+
+function clearAccountLoginMarker(userDataPath, accountId) {
+  try {
+    fs.rmSync(accountLoginMarker(userDataPath, accountId), { force: true });
+  } catch (_) {}
+}
+
+function clearAccountCredentials(userDataPath, accountId) {
+  const home = accountHome(userDataPath, accountId);
+  for (const item of ['.qqcli', 'qq-channel-login.png', '.publisher-login-ok']) {
+    try {
+      fs.rmSync(path.join(home, item), { recursive: true, force: true });
+    } catch (_) {}
+  }
+  const key = `${userDataPath}::${Number(accountId)}`;
+  cliCache.delete(key);
+}
+
 function getAccountCli(userDataPath, accountId) {
   const id = normalizeAccountId(accountId);
   if (!id) throw new Error('请先选择QQ账号');
@@ -43,18 +76,34 @@ function setActiveAccountId(id) {
   return activeAccountId;
 }
 
+async function getAccountLoginStatus(accountId, options = {}) {
+  const id = normalizeAccountId(accountId);
+  if (!id) return { loggedIn: false, valid: false, message: 'QQ账号不存在' };
+  const userDataPath = app.getPath('userData');
+
+  // 只有真正完成过本账号扫码授权的账号，才允许进入 CLI 状态检测。
+  // 这是第二道隔离：即使 CLI/系统目录里意外残留其它账号 token，也不能把未登录账号判成已登录。
+  if (!hasAccountLoginMarker(userDataPath, id) && !options.ignoreMarker) {
+    return { loggedIn: false, valid: false, message: '该QQ账号尚未登录' };
+  }
+
+  const status = await getAccountCli(userDataPath, id).loginStatus();
+  if (!status?.loggedIn || !status?.valid) {
+    clearAccountLoginMarker(userDataPath, id);
+    return { ...status, loggedIn: false, valid: false };
+  }
+  return status;
+}
+
 async function listAccountLoginStatuses() {
   if (!dbRef) return [];
   const accounts = dbRef.listAccounts();
-  const userDataPath = app.getPath('userData');
   const results = [];
 
-  // Windows 下账号凭证需要通过 ~/.qqcli 沙箱串行交换，因此这里也明确逐个检测，
-  // 避免账号状态检查互相覆盖。
   for (const account of accounts) {
     const accountId = Number(account.id);
     try {
-      const status = await getAccountCli(userDataPath, accountId).loginStatus();
+      const status = await getAccountLoginStatus(accountId);
       results.push({
         id: accountId,
         name: account.name,
@@ -120,6 +169,16 @@ function installMultiAccountSupport(DB, BrowserManager) {
       accounts = this.db.prepare('SELECT * FROM accounts ORDER BY id ASC').all();
     }
 
+    // 前几版多账号实现可能把同一个全局 token 复制进了多个账号目录。
+    // 用户已明确不需要保留旧登录数据，所以 v2 首次启动时只清空多账号登录凭证，强制每个账号重新扫码一次。
+    const credentialVersion = this.db.prepare("SELECT value FROM settings WHERE key='account_credential_isolation_v2'").get()?.value;
+    if (credentialVersion !== '1') {
+      const accountsRoot = path.join(app.getPath('userData'), 'qq-accounts');
+      try { fs.rmSync(accountsRoot, { recursive: true, force: true }); } catch (_) {}
+      cliCache.clear();
+      this.db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('account_credential_isolation_v2','1')").run();
+    }
+
     const saved = normalizeAccountId(this.db.prepare("SELECT value FROM settings WHERE key='active_account_id'").get()?.value);
     activeAccountId = accounts.some(item => Number(item.id) === saved) ? saved : Number(accounts[0].id);
     this.db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('active_account_id',?)").run(String(activeAccountId));
@@ -175,6 +234,8 @@ function installMultiAccountSupport(DB, BrowserManager) {
   };
 
   const originalPublishTask = BrowserManager.prototype.publishTask;
+  const originalPollPublishingLogin = BrowserManager.prototype.pollPublishingLogin;
+
   BrowserManager.prototype.publishTask = function publishTaskForAccount(task) {
     const accountId = this.db.getAccountIdForInstance(task.instance_id);
     return accountScope.run(accountId, () => originalPublishTask.call(this, task));
@@ -183,6 +244,48 @@ function installMultiAccountSupport(DB, BrowserManager) {
   BrowserManager.prototype.getChannelCli = function getScopedChannelCli() {
     const accountId = getActiveAccountId();
     return getAccountCli(this.userDataPath, accountId);
+  };
+
+  BrowserManager.prototype.getPublishingLoginStatus = async function getScopedPublishingLoginStatus() {
+    const accountId = getActiveAccountId();
+    return getAccountLoginStatus(accountId);
+  };
+
+  BrowserManager.prototype.beginPublishingLogin = async function beginScopedPublishingLogin() {
+    const accountId = getActiveAccountId();
+    if (!accountId) throw new Error('请先选择QQ账号');
+
+    const userDataPath = this.userDataPath;
+    clearAccountCredentials(userDataPath, accountId);
+    const cli = getAccountCli(userDataPath, accountId);
+    const qrcodePath = path.join(accountHome(userDataPath, accountId), 'qq-channel-login.png');
+
+    // 不调用 cli.beginLogin()，因为它会先执行 login status；在 Windows 上如果外部 CLI
+    // 有残留 token，可能错误地提前返回“已登录”。这里直接发起新的扫码流程。
+    const data = await cli.run(['login', '--json', '--qrcode-path', qrcodePath], null, { timeoutMs: 30000 });
+    const returnedPath = String(data.qrcode_path || qrcodePath);
+    let qrDataUrl = '';
+    if (fs.existsSync(returnedPath)) {
+      qrDataUrl = `data:image/png;base64,${fs.readFileSync(returnedPath).toString('base64')}`;
+    }
+    return {
+      ...data,
+      qrcodePath: returnedPath,
+      qrDataUrl,
+      verificationUri: String(data.verification_uri || data.verification_url || '')
+    };
+  };
+
+  BrowserManager.prototype.pollPublishingLogin = async function pollScopedPublishingLogin() {
+    const accountId = getActiveAccountId();
+    if (!accountId) throw new Error('请先选择QQ账号');
+    const result = await originalPollPublishingLogin.call(this);
+    if (result?.loggedIn || result?.valid) {
+      setAccountLoginMarker(this.userDataPath, accountId);
+    } else {
+      clearAccountLoginMarker(this.userDataPath, accountId);
+    }
+    return result;
   };
 
   ipcMain.handle('accounts:list', () => dbRef?.listAccounts() || []);
@@ -213,5 +316,7 @@ module.exports = {
   setActiveAccountId,
   getAccountCli,
   accountHome,
+  getAccountLoginStatus,
+  hasAccountLoginMarker,
   listAccountLoginStatuses
 };
