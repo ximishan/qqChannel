@@ -265,4 +265,65 @@
 
   const targetHead = qs('#taskDialog .target-head strong');
   if (targetHead) targetHead.textContent = '选择目标实例 / 频道（可多选）';
+
+  // 任务列表只在“频道”列显示频道名，状态统一移到“状态”列并使用中文。
+  const statusText = {
+    pending: '待发布',
+    running: '发布中',
+    success: '成功',
+    failed: '失败'
+  };
+  const queueStatusText = {
+    idle: '空闲',
+    running: '发布中',
+    waiting: '等待中',
+    paused: '已暂停',
+    stopped: '已停止',
+    error: '异常'
+  };
+
+  function normalizeTaskTablePresentation() {
+    qsa('#taskBody tr').forEach(row => {
+      const cells = row.children;
+      if (cells.length < 9) return;
+      const channelCell = cells[3];
+      const statusCell = cells[8];
+      const chips = [...channelCell.querySelectorAll('.target-status-chip')];
+      let targetState = '';
+
+      chips.forEach(chip => {
+        if (!targetState) {
+          targetState = ['pending', 'running', 'success', 'failed'].find(key => chip.classList.contains(key)) || '';
+        }
+        const channelName = String(chip.textContent || '').split('·')[0].trim();
+        if (chip.textContent !== channelName) chip.textContent = channelName;
+        chip.classList.remove('pending', 'running', 'success', 'failed');
+        chip.classList.add('channel-name-only');
+      });
+
+      const rawTaskState = String(statusCell.textContent || '').trim();
+      const state = targetState || rawTaskState;
+      const localized = statusText[state] || rawTaskState;
+      if (localized && statusCell.textContent !== localized) statusCell.textContent = localized;
+    });
+  }
+
+  function normalizeQueuePresentation() {
+    const queue = qs('#queueStatus');
+    if (!queue) return;
+    const original = String(queue.textContent || '');
+    const translated = original.replace(/队列：(idle|running|waiting|paused|stopped|error)/, (_, state) => `队列：${queueStatusText[state] || state}`);
+    if (translated !== original) queue.textContent = translated;
+  }
+
+  const taskBody = qs('#taskBody');
+  if (taskBody) {
+    new MutationObserver(normalizeTaskTablePresentation).observe(taskBody, { childList: true, subtree: true, characterData: true });
+  }
+  const queueStatus = qs('#queueStatus');
+  if (queueStatus) {
+    new MutationObserver(normalizeQueuePresentation).observe(queueStatus, { childList: true, subtree: true, characterData: true });
+  }
+  normalizeTaskTablePresentation();
+  normalizeQueuePresentation();
 })();
