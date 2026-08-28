@@ -100,54 +100,20 @@
       <div class="card">
         <h3>发布运行参数</h3>
         <div class="grid3">
-          <div>
-            <label>失败重试次数</label>
-            <input id="setting_max_retries" type="number" min="0" max="10">
-          </div>
-          <div>
-            <label>上传等待超时（毫秒）</label>
-            <input id="setting_upload_timeout_ms" type="number" min="10000" step="1000">
-          </div>
-          <div>
-            <label>发布结果确认超时（毫秒）</label>
-            <input id="setting_publish_verify_timeout_ms" type="number" min="5000" step="1000">
-          </div>
+          <div><label>失败重试次数</label><input id="setting_max_retries" type="number" min="0" max="10"></div>
+          <div><label>上传等待超时（毫秒）</label><input id="setting_upload_timeout_ms" type="number" min="10000" step="1000"></div>
+          <div><label>发布结果确认超时（毫秒）</label><input id="setting_publish_verify_timeout_ms" type="number" min="5000" step="1000"></div>
         </div>
         <div class="grid3">
-          <div>
-            <label>任务最小间隔（秒）</label>
-            <input id="setting_interval_min_seconds" type="number" min="0" step="1">
-          </div>
-          <div>
-            <label>任务最大间隔（秒）</label>
-            <input id="setting_interval_max_seconds" type="number" min="0" step="1">
-          </div>
-          <div>
-            <label>同一任务的频道间隔（秒）</label>
-            <input id="setting_target_interval_seconds" type="number" min="0" step="1">
-          </div>
-          <div>
-            <label>失败自动截图</label>
-            <select id="setting_screenshot_on_error"><option value="1">开启</option><option value="0">关闭</option></select>
-          </div>
+          <div><label>任务最小间隔（秒）</label><input id="setting_interval_min_seconds" type="number" min="0" step="1"></div>
+          <div><label>任务最大间隔（秒）</label><input id="setting_interval_max_seconds" type="number" min="0" step="1"></div>
+          <div><label>同一任务的频道间隔（秒）</label><input id="setting_target_interval_seconds" type="number" min="0" step="1"></div>
+          <div><label>失败自动截图</label><select id="setting_screenshot_on_error"><option value="1">开启</option><option value="0">关闭</option></select></div>
         </div>
         <button id="btnSaveRuntimeSettings">保存运行参数</button>
       </div>
-
-      <div class="card">
-        <h3>发帖元素定位</h3>
-        <p class="hint">选择器已按真实腾讯频道页面结构更新。每行可填写一个候选选择器，运行时会按顺序尝试。</p>
-        <div id="selectorList"></div>
-      </div>
-      <div class="card">
-        <h3>选择器测试</h3>
-        <div class="grid3">
-          <input id="testUrl" placeholder="频道 URL（可选）">
-          <input id="testSelector" placeholder='.publish-button button:has-text("发表")'>
-          <button id="btnTestSelector">测试并高亮</button>
-        </div>
-        <div id="testResult" class="result"></div>
-      </div>
+      <div class="card"><h3>发帖元素定位</h3><p class="hint">选择器已按真实腾讯频道页面结构更新。每行可填写一个候选选择器，运行时会按顺序尝试。</p><div id="selectorList"></div></div>
+      <div class="card"><h3>选择器测试</h3><div class="grid3"><input id="testUrl" placeholder="频道 URL（可选）"><input id="testSelector" placeholder='.publish-button button:has-text("发表")'><button id="btnTestSelector">测试并高亮</button></div><div id="testResult" class="result"></div></div>
     </section>
 
     <section id="logs" class="panel">
@@ -161,104 +127,25 @@
       <div class="modal-head"><div><h2>新建发布任务</h2><p>支持纯文本、单张图片或单个视频</p></div><button value="cancel" class="icon-btn">×</button></div>
       <div class="modal-grid">
         <div class="form-area">
-          <label>任务类型</label>
-          <select id="taskMediaType"><option value="text">纯文本</option><option value="image">图片</option><option value="video">视频</option></select>
-          <div id="taskMediaRow" class="hidden">
-            <label id="taskMediaLabel">素材文件</label>
-            <div class="file-row"><input id="mediaPath" readonly placeholder="请选择素材文件"><button type="button" id="btnPickMedia">浏览...</button></div>
-          </div>
+          <label>任务类型</label><select id="taskMediaType"><option value="text">纯文本</option><option value="image">图片</option><option value="video">视频</option></select>
+          <div id="taskMediaRow" class="hidden"><label id="taskMediaLabel">素材文件</label><div class="file-row"><input id="mediaPath" readonly placeholder="请选择素材文件"><button type="button" id="btnPickMedia">浏览...</button></div></div>
           <label>任务标题</label><input id="taskTitle" placeholder="用于任务列表；未填评论时会作为纯文本内容发布">
-          <label>评论</label><textarea id="taskBodyText" rows="5" >迅雷🔍《孟德精选》</textarea>
-          <div class="demo-row">
-            <div><label>开始时间</label><input id="taskStartTime" type="datetime-local"><div class="field-hint">留空表示队列启动后立即执行</div></div>
-            <div><label>随机间隔（秒）</label><div class="interval-range"><input id="taskIntervalMin" type="number" min="0" step="1" placeholder="最小"><span>至</span><input id="taskIntervalMax" type="number" min="0" step="1" placeholder="最大"></div><div class="field-hint">本任务完成后，到下一任务前的等待时间</div></div>
-          </div>
+          <label>评论</label><textarea id="taskBodyText" rows="5">迅雷🔍《孟德精选》</textarea>
+          <div class="demo-row"><div><label>开始时间</label><input id="taskStartTime" type="datetime-local"><div class="field-hint">留空表示队列启动后立即执行</div></div><div><label>随机间隔（秒）</label><div class="interval-range"><input id="taskIntervalMin" type="number" min="0" step="1" placeholder="最小"><span>至</span><input id="taskIntervalMax" type="number" min="0" step="1" placeholder="最大"></div><div class="field-hint">本任务完成后，到下一任务前的等待时间</div></div></div>
         </div>
-        <div class="target-area">
-          <div class="target-head"><strong>选择目标实例（可多选）</strong><span id="taskTargetSummary" class="target-summary">已选 0 个实例 · 0 个频道</span><button type="button" id="btnSelectAll">全选</button></div>
-          <div id="taskChannelList"></div>
-        </div>
+        <div class="target-area"><div class="target-head"><strong>选择目标实例（可多选）</strong><span id="taskTargetSummary" class="target-summary">已选 0 个实例 · 0 个频道</span><button type="button" id="btnSelectAll">全选</button></div><div id="taskChannelList"></div></div>
       </div>
       <div class="modal-actions"><button value="cancel">取消</button><button type="button" class="primary" id="btnSaveTask">创建任务</button></div>
     </form>
   </dialog>
 
-  <dialog id="channelEditDialog" class="channel-edit-dialog">
-    <form id="channelEditForm" class="modal">
-      <div class="modal-head">
-        <div><h2>修改频道名称</h2><p>只修改工具中的显示名称，不会修改腾讯频道本身。</p></div>
-        <button type="button" id="btnCloseChannelEdit" class="icon-btn">×</button>
-      </div>
-      <input id="channelEditId" type="hidden">
-      <label for="channelEditName">频道名称</label>
-      <input id="channelEditName" maxlength="100" autocomplete="off" required>
-      <div class="modal-actions">
-        <button type="button" id="btnCancelChannelEdit">取消</button>
-        <button type="submit" class="primary" id="btnSaveChannelEdit">保存名称</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="instanceDialog" class="instance-dialog">
-    <form id="instanceForm" class="modal">
-      <div class="modal-head">
-        <div><h2 id="instanceDialogTitle">新建实例</h2><p id="instanceDialogDescription">实例用于分组管理频道；QQ 登录状态由所有实例共用。</p></div>
-        <button type="button" id="btnCloseInstance" class="icon-btn">×</button>
-      </div>
-      <label for="instanceName">实例名称</label>
-      <input id="instanceName" maxlength="100" autocomplete="off" required placeholder="例如：小说频道组">
-      <div class="modal-actions">
-        <button type="button" id="btnDeleteInstance" class="danger hidden">删除实例</button>
-        <button type="button" id="btnCancelInstance">取消</button>
-        <button type="submit" class="primary" id="btnSaveInstance">创建实例</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="batchVideoDialog">
-    <form method="dialog" class="modal">
-      <div class="modal-head"><div><h2>批量视频目录</h2><p>一个视频文件创建一条任务</p></div><button value="cancel" class="icon-btn">×</button></div>
-      <div class="modal-grid">
-        <div class="form-area">
-          <label>视频目录</label>
-          <div class="file-row"><input id="batchFolder" readonly placeholder="请选择包含视频的目录"><button type="button" id="btnPickVideoFolder">浏览...</button></div>
-          <label>统一评论（可选）</label>
-          <textarea id="batchBody" rows="5" placeholder="可使用 {filename} 代表不含扩展名的文件名"></textarea>
-          <label>识别到的视频</label>
-          <div id="batchVideoSummary" class="hint">尚未选择目录</div>
-          <div id="batchVideoFiles" class="channel-list"></div>
-        </div>
-        <div class="target-area">
-          <div class="target-head"><strong>选择目标频道（可多选）</strong><button type="button" id="btnBatchSelectAll">全选</button></div>
-          <div id="batchChannelList"></div>
-        </div>
-      </div>
-      <div class="modal-actions"><button value="cancel">取消</button><button type="button" class="primary" id="btnCreateBatchTasks">批量创建任务</button></div>
-    </form>
-  </dialog>
-
-  <dialog id="publisherLoginDialog" class="publisher-login-dialog">
-    <form class="modal" method="dialog">
-      <div class="modal-head">
-        <div><h2>登录 QQ 频道发布组件</h2><p>使用手机 QQ 扫码授权，不需要电脑安装 Chrome。</p></div>
-        <button value="cancel" class="icon-btn">×</button>
-      </div>
-      <div class="publisher-login-body">
-        <img id="publisherLoginQr" alt="QQ 频道登录二维码">
-        <div>
-          <p>请在二维码有效期内完成授权。</p>
-          <a id="publisherLoginLink" class="hidden" target="_blank" rel="noreferrer">打开授权链接</a>
-          <div id="publisherLoginMessage" class="result">扫码后点击“我已完成扫码”。</div>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button value="cancel">取消</button>
-        <button type="button" class="primary" id="btnPollPublisherLogin">我已完成扫码</button>
-      </div>
-    </form>
-  </dialog>
+  <dialog id="channelEditDialog" class="channel-edit-dialog"><form id="channelEditForm" class="modal"><div class="modal-head"><div><h2>修改频道名称</h2><p>只修改工具中的显示名称，不会修改腾讯频道本身。</p></div><button type="button" id="btnCloseChannelEdit" class="icon-btn">×</button></div><input id="channelEditId" type="hidden"><label for="channelEditName">频道名称</label><input id="channelEditName" maxlength="100" autocomplete="off" required><div class="modal-actions"><button type="button" id="btnCancelChannelEdit">取消</button><button type="submit" class="primary" id="btnSaveChannelEdit">保存名称</button></div></form></dialog>
+  <dialog id="instanceDialog" class="instance-dialog"><form id="instanceForm" class="modal"><div class="modal-head"><div><h2 id="instanceDialogTitle">新建实例</h2><p id="instanceDialogDescription">实例用于分组管理频道；QQ 登录状态由所有实例共用。</p></div><button type="button" id="btnCloseInstance" class="icon-btn">×</button></div><label for="instanceName">实例名称</label><input id="instanceName" maxlength="100" autocomplete="off" required placeholder="例如：小说频道组"><div class="modal-actions"><button type="button" id="btnDeleteInstance" class="danger hidden">删除实例</button><button type="button" id="btnCancelInstance">取消</button><button type="submit" class="primary" id="btnSaveInstance">创建实例</button></div></form></dialog>
+  <dialog id="batchVideoDialog"><form method="dialog" class="modal"><div class="modal-head"><div><h2>批量视频目录</h2><p>一个视频文件创建一条任务</p></div><button value="cancel" class="icon-btn">×</button></div><div class="modal-grid"><div class="form-area"><label>视频目录</label><div class="file-row"><input id="batchFolder" readonly placeholder="请选择包含视频的目录"><button type="button" id="btnPickVideoFolder">浏览...</button></div><label>统一评论（可选）</label><textarea id="batchBody" rows="5" placeholder="可使用 {filename} 代表不含扩展名的文件名"></textarea><label>识别到的视频</label><div id="batchVideoSummary" class="hint">尚未选择目录</div><div id="batchVideoFiles" class="channel-list"></div></div><div class="target-area"><div class="target-head"><strong>选择目标频道（可多选）</strong><button type="button" id="btnBatchSelectAll">全选</button></div><div id="batchChannelList"></div></div></div><div class="modal-actions"><button value="cancel">取消</button><button type="button" class="primary" id="btnCreateBatchTasks">批量创建任务</button></div></form></dialog>
+  <dialog id="publisherLoginDialog" class="publisher-login-dialog"><form class="modal" method="dialog"><div class="modal-head"><div><h2>登录 QQ 频道发布组件</h2><p>使用手机 QQ 扫码授权，不需要电脑安装 Chrome。</p></div><button value="cancel" class="icon-btn">×</button></div><div class="publisher-login-body"><img id="publisherLoginQr" alt="QQ 频道登录二维码"><div><p>请在二维码有效期内完成授权。</p><a id="publisherLoginLink" class="hidden" target="_blank" rel="noreferrer">打开授权链接</a><div id="publisherLoginMessage" class="result">扫码后点击“我已完成扫码”。</div></div></div><div class="modal-actions"><button value="cancel">取消</button><button type="button" class="primary" id="btnPollPublisherLogin">我已完成扫码</button></div></form></dialog>
 
   <script src="app.js"></script>
   <script src="task-instance-selector.js"></script>
+  <script src="channel-sync.js"></script>
 </body>
 </html>
