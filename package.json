@@ -1,5 +1,5 @@
 {
-  "name": "腾讯频道发布工具",
+  "name": "tencent-channel-publisher",
   "version": "0.3.1",
   "description": "腾讯频道发布工具",
   "main": "src/main/bootstrap.js",
