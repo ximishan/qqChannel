@@ -1,7 +1,7 @@
 const { app, ipcMain } = require('electron');
 const Database = require('better-sqlite3');
 const path = require('path');
-const { getActiveAccountId, getAccountCli } = require('./multi-account-support');
+const { getActiveAccountId, getAccountCli, getAccountLoginStatus } = require('./multi-account-support');
 
 function getCli() {
   const accountId = getActiveAccountId();
@@ -47,10 +47,11 @@ function normalizeRemoteGuilds(data = {}) {
 }
 
 async function fetchRemoteGuilds() {
-  const channelCli = getCli();
-  const login = await channelCli.loginStatus();
+  const accountId = getActiveAccountId();
+  if (!accountId) throw new Error('请先选择QQ账号');
+  const login = await getAccountLoginStatus(accountId);
   if (!login.loggedIn) throw new Error('当前QQ账号未登录或授权已失效，请先点击“登录QQ”完成扫码授权');
-  const data = await channelCli.run(['manage', 'get-my-join-guild-info', '--json'], {});
+  const data = await getCli().run(['manage', 'get-my-join-guild-info', '--json'], {});
   return normalizeRemoteGuilds(data);
 }
 
@@ -60,6 +61,9 @@ async function importGuilds(instanceId, guilds = []) {
   if (!accountId) throw new Error('请先选择QQ账号');
   if (!Number.isInteger(normalizedInstanceId) || normalizedInstanceId <= 0) throw new Error('请选择要导入到的频道分组');
   if (!Array.isArray(guilds) || !guilds.length) throw new Error('请至少选择一个频道');
+
+  const login = await getAccountLoginStatus(accountId);
+  if (!login.loggedIn) throw new Error('当前QQ账号未登录或授权已失效，请先完成扫码授权');
 
   const db = openDb();
   try {
