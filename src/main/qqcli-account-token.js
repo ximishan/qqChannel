@@ -46,9 +46,6 @@ function installAccountTokenSupport() {
   if (TencentChannelCli.prototype.__accountTokenSupportInstalled) return;
   TencentChannelCli.prototype.__accountTokenSupportInstalled = true;
 
-  // Windows 版 CLI 的默认登录态来自系统 keychain，改 HOME/USERPROFILE 并不能隔离账号。
-  // 正确做法是：扫码后提取 token，每个账号各自保存 credentials.env；后续所有状态检查、
-  // 频道读取和发布都通过官方支持的 QQ_AI_CONNECT_DOTENV 指向该账号的 token 文件。
   const originalExecute = TencentChannelCli.prototype.execute;
   const originalBeginLogin = TencentChannelCli.prototype.beginLogin;
   const originalPollLogin = TencentChannelCli.prototype.pollLogin;
@@ -64,11 +61,14 @@ function installAccountTokenSupport() {
   };
 
   TencentChannelCli.prototype.execute = function executeWithAccountToken(args, payload = null, timeoutMs = 180000) {
-    const isLoginFlow = args?.[0] === 'login' && (args.length === 1 || args?.[1] === 'poll-token');
+    // login status 必须使用当前账号自己的 token；其它 login 子命令属于全局扫码流程，
+    // 不能带任何已有账号的 QQ_AI_CONNECT_DOTENV。
+    const isLoginCommand = args?.[0] === 'login';
+    const isLoginStatus = isLoginCommand && args?.[1] === 'status';
     const credentialFile = accountCredentialFile(this);
     const previousDotenv = process.env.QQ_AI_CONNECT_DOTENV;
 
-    if (isLoginFlow) {
+    if (isLoginCommand && !isLoginStatus) {
       delete process.env.QQ_AI_CONNECT_DOTENV;
     } else if (credentialFile && fs.existsSync(credentialFile)) {
       process.env.QQ_AI_CONNECT_DOTENV = credentialFile;
@@ -77,8 +77,6 @@ function installAccountTokenSupport() {
     }
 
     try {
-      // originalExecute 会在本调用栈内同步读取 process.env 并 spawn 子进程，
-      // 因此这里可以在返回 Promise 后立即恢复宿主环境变量，不会影响子进程。
       return originalExecute.call(this, args, payload, timeoutMs);
     } finally {
       if (previousDotenv == null) delete process.env.QQ_AI_CONNECT_DOTENV;
@@ -116,9 +114,6 @@ function installAccountTokenSupport() {
 
   TencentChannelCli.prototype.pollLogin = async function saveAccountTokenAfterLogin() {
     const data = await this.run(['login', 'poll-token', '--json'], null, { timeoutMs: 600000 });
-
-    // tencent-channel-cli 登录完成后会把当前 token 写入 ~/.qqcli/.env。
-    // 这里立即复制成当前账号自己的凭证文件，之后不再依赖 Windows 全局 keychain 登录态。
     const token = readTokenFromEnv(globalCredentialFile());
     if (!token) {
       clearAccountToken(this);
@@ -134,12 +129,10 @@ function installAccountTokenSupport() {
     return { ...data, ...status };
   };
 
-  // 仅用于测试/诊断。
   TencentChannelCli.prototype.accountCredentialFile = function getAccountCredentialFile() {
     return accountCredentialFile(this);
   };
 
-  // 保留引用，方便将来排查 CLI 版本变化。
   TencentChannelCli.prototype.__originalBeginLogin = originalBeginLogin;
   TencentChannelCli.prototype.__originalPollLogin = originalPollLogin;
 }
