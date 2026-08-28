@@ -81,21 +81,33 @@ module.exports = function installCliPublishingSupport(DB, BrowserManager) {
   };
 
   BrowserManager.prototype.resolveCliTarget = async function resolveCliTarget(target) {
+    const localName = String(target.channel_name || target.name || '').trim();
+    const localUrl = String(target.channel_url || target.url || '').trim();
     if (target.guild_id && target.post_channel_id) {
-      return {
+      const cached = {
         guildId: String(target.guild_id),
         guildNumber: String(target.guild_number || ''),
         channelId: String(target.post_channel_id),
         channelName: String(target.post_channel_name || '全部')
       };
+      this.db.log('info', `频道映射使用缓存：${localName || '未知频道'} -> ${cached.guildNumber || cached.guildId} / ${cached.channelName}`);
+      return cached;
     }
-    const binding = await this.getChannelCli().resolveChannel(target);
-    this.db.saveChannelBinding(target.channel_id, binding);
-    target.guild_id = binding.guildId;
-    target.guild_number = binding.guildNumber;
-    target.post_channel_id = binding.channelId;
-    target.post_channel_name = binding.channelName;
-    return binding;
+
+    this.db.log('info', `正在解析频道映射：名称=${localName || '未知'}；URL=${localUrl || '未提供'}；已保存频道号=${target.guild_number || '无'}`);
+    try {
+      const binding = await this.getChannelCli().resolveChannel(target);
+      this.db.saveChannelBinding(target.channel_id, binding);
+      target.guild_id = binding.guildId;
+      target.guild_number = binding.guildNumber;
+      target.post_channel_id = binding.channelId;
+      target.post_channel_name = binding.channelName;
+      this.db.log('info', `频道映射成功：${localName || '未知频道'} -> ${binding.guildNumber || binding.guildId} / ${binding.channelName}(${binding.channelId})`);
+      return binding;
+    } catch (error) {
+      this.db.log('error', `频道映射失败：名称=${localName || '未知'}；URL=${localUrl || '未提供'}；原因=${String(error?.message || error)}`);
+      throw error;
+    }
   };
 
   BrowserManager.prototype.publishOneTargetViaCli = async function publishOneTargetViaCli(task, target, attempt) {
@@ -131,7 +143,7 @@ module.exports = function installCliPublishingSupport(DB, BrowserManager) {
         target.post_url = String(result.share_url || target.post_url || '');
         target.feed_id = String(result.feed_id || '');
         target.feed_create_time = String(result.create_time_raw || '');
-        this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 帖子发布成功，已保存评论所需标识`);
+        this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 帖子发布成功，feed_id=${target.feed_id || '未返回'}，已保存评论所需标识`);
       } else {
         this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 帖子已发布，本次仅补发评论`);
       }
@@ -210,6 +222,7 @@ module.exports = function installCliPublishingSupport(DB, BrowserManager) {
       throw new Error('腾讯频道发布授权未登录或已失效，请先点击“登录QQ”扫码授权');
     }
 
+    this.db.log('info', `任务 #${task.id} 发布授权有效，开始处理 ${executableTargets.length} 个目标频道`);
     for (let targetIndex = 0; targetIndex < executableTargets.length; targetIndex += 1) {
       const target = executableTargets[targetIndex];
       let success = false;
