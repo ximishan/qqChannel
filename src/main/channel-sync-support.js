@@ -1,13 +1,12 @@
 const { app, ipcMain } = require('electron');
 const Database = require('better-sqlite3');
 const path = require('path');
-const { TencentChannelCli } = require('./tencent-channel-cli');
-
-let cli = null;
+const { getActiveAccountId, getAccountCli } = require('./multi-account-support');
 
 function getCli() {
-  if (!cli) cli = new TencentChannelCli({ userDataPath: app.getPath('userData') });
-  return cli;
+  const accountId = getActiveAccountId();
+  if (!accountId) throw new Error('请先选择QQ账号');
+  return getAccountCli(app.getPath('userData'), accountId);
 }
 
 function openDb() {
@@ -50,20 +49,22 @@ function normalizeRemoteGuilds(data = {}) {
 async function fetchRemoteGuilds() {
   const channelCli = getCli();
   const login = await channelCli.loginStatus();
-  if (!login.loggedIn) throw new Error('QQ频道授权未登录或已失效，请先点击“登录QQ”完成扫码授权');
+  if (!login.loggedIn) throw new Error('当前QQ账号未登录或授权已失效，请先点击“登录QQ”完成扫码授权');
   const data = await channelCli.run(['manage', 'get-my-join-guild-info', '--json'], {});
   return normalizeRemoteGuilds(data);
 }
 
 async function importGuilds(instanceId, guilds = []) {
   const normalizedInstanceId = Number(instanceId);
-  if (!Number.isInteger(normalizedInstanceId) || normalizedInstanceId <= 0) throw new Error('请选择要导入到的实例');
+  const accountId = getActiveAccountId();
+  if (!accountId) throw new Error('请先选择QQ账号');
+  if (!Number.isInteger(normalizedInstanceId) || normalizedInstanceId <= 0) throw new Error('请选择要导入到的频道分组');
   if (!Array.isArray(guilds) || !guilds.length) throw new Error('请至少选择一个频道');
 
   const db = openDb();
   try {
-    const instance = db.prepare('SELECT id,name FROM instances WHERE id=?').get(normalizedInstanceId);
-    if (!instance) throw new Error('目标实例不存在');
+    const instance = db.prepare('SELECT id,name,account_id FROM instances WHERE id=? AND account_id=?').get(normalizedInstanceId, accountId);
+    if (!instance) throw new Error('目标频道分组不存在，或不属于当前QQ账号');
 
     const channelCli = getCli();
     const insert = db.prepare(`
@@ -79,7 +80,8 @@ async function importGuilds(instanceId, guilds = []) {
       SELECT c.*, i.name AS instance_name
       FROM channels c
       JOIN instances i ON i.id=c.instance_id
-      WHERE c.guild_id=? OR (c.guild_number<>'' AND c.guild_number=?)
+      WHERE i.account_id=?
+        AND (c.guild_id=? OR (c.guild_number<>'' AND c.guild_number=?))
       ORDER BY CASE WHEN c.instance_id=? THEN 0 ELSE 1 END, c.id ASC
       LIMIT 1
     `);
@@ -108,7 +110,7 @@ async function importGuilds(instanceId, guilds = []) {
       }
 
       const url = guildNumber ? `https://pd.qq.com/g/${guildNumber}` : `https://pd.qq.com/g/${guildId}`;
-      const existing = findByGuild.get(guildId, guildNumber, normalizedInstanceId);
+      const existing = findByGuild.get(accountId, guildId, guildNumber, normalizedInstanceId);
       if (existing) {
         update.run(name, url, guildId, guildNumber, preferred.channelId, preferred.name, existing.id);
         updated += 1;
@@ -117,12 +119,12 @@ async function importGuilds(instanceId, guilds = []) {
           status: 'updated',
           message: existing.instance_id === normalizedInstanceId
             ? `已更新到${instance.name}`
-            : `已存在于${existing.instance_name}，已更新原绑定`
+            : `已存在于频道分组“${existing.instance_name}”，已更新原绑定`
         });
       } else {
         insert.run(normalizedInstanceId, name, url, 1, guildId, guildNumber, preferred.channelId, preferred.name);
         created += 1;
-        details.push({ name, status: 'created', message: `已导入到${instance.name}` });
+        details.push({ name, status: 'created', message: `已导入到频道分组“${instance.name}”` });
       }
     }
 
