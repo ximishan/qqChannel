@@ -14,18 +14,24 @@
     }
   }
 
+  function setTextIfChanged(element, nextText) {
+    if (!element) return;
+    const next = String(nextText || '');
+    if (element.textContent !== next) element.textContent = next;
+  }
+
   function normalizeControls() {
     const title = document.querySelector('#instanceDialogTitle');
-    if (title) title.textContent = replaceText(title.textContent);
+    if (title) setTextIfChanged(title, replaceText(title.textContent));
 
     const description = document.querySelector('#instanceDialogDescription');
-    if (description) description.textContent = replaceText(description.textContent);
+    if (description) setTextIfChanged(description, replaceText(description.textContent));
 
     const save = document.querySelector('#btnSaveInstance');
-    if (save) save.textContent = replaceText(save.textContent);
+    if (save) setTextIfChanged(save, replaceText(save.textContent));
 
     const del = document.querySelector('#btnDeleteInstance');
-    if (del) del.textContent = replaceText(del.textContent);
+    if (del) setTextIfChanged(del, replaceText(del.textContent));
   }
 
   function normalizeAll(root = document.body) {
@@ -49,7 +55,10 @@
       input.value = String(current.name || '');
       input.placeholder = '请输入频道分组名称';
       const description = document.querySelector('#instanceDialogDescription');
-      if (description) description.textContent = `当前频道分组：${current.name}。可修改名称，也可删除该频道分组及其本地频道和任务数据。`;
+      if (description) {
+        const next = `当前频道分组：${current.name}。可修改名称，也可删除该频道分组及其本地频道和任务数据。`;
+        if (description.textContent !== next) description.textContent = next;
+      }
       requestAnimationFrame(() => {
         input.focus();
         input.select();
@@ -62,6 +71,7 @@
   normalizeAll();
 
   const observer = new MutationObserver((mutations) => {
+    let controlsNeedNormalize = false;
     for (const mutation of mutations) {
       if (mutation.type === 'characterData' && mutation.target?.nodeValue?.includes('实例')) {
         mutation.target.nodeValue = replaceText(mutation.target.nodeValue);
@@ -73,8 +83,9 @@
           normalizeTextNodes(node);
         }
       }
+      controlsNeedNormalize = true;
     }
-    normalizeControls();
+    if (controlsNeedNormalize) normalizeControls();
   });
 
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
