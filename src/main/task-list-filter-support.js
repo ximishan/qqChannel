@@ -2,6 +2,11 @@ module.exports = function installTaskListFilterSupport(DB) {
   if (DB.prototype.__taskListFilterSupportInstalled) return;
   DB.prototype.__taskListFilterSupportInstalled = true;
 
+  const originalGetNextPendingTask = DB.prototype.getNextPendingTask;
+  const originalGetNextScheduledAt = DB.prototype.getNextScheduledAt;
+  const originalCountPendingTasks = DB.prototype.countPendingTasks;
+  const originalGetPendingTaskSummary = DB.prototype.getPendingTaskSummary;
+
   DB.prototype.listTasks = function listTasksGlobal(_instanceId, page = 1, pageSize = 10) {
     const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(Number(pageSize) || 10)));
     const groupId = Math.max(0, Math.floor(Number(this.getSetting('task_list_group_filter', '0')) || 0));
@@ -62,5 +67,53 @@ module.exports = function installTaskListFilterSupport(DB) {
       totalPages,
       filters: { groupId, channelSearch }
     };
+  };
+
+  // instanceId=0 表示“全部频道分组”的全局发布队列。
+  // 搜索框只负责列表查找，不限制队列实际要发布的任务，避免搜索关键词误伤待发任务。
+  DB.prototype.getNextPendingTask = function getNextPendingTaskWithGlobalScope(instanceId) {
+    const id = Number(instanceId);
+    if (id > 0) return originalGetNextPendingTask.call(this, id);
+    const row = this.db.prepare(`
+      SELECT id FROM tasks
+      WHERE status='pending'
+        AND (scheduled_at IS NULL OR datetime(scheduled_at) <= datetime('now'))
+      ORDER BY CASE WHEN scheduled_at IS NULL THEN 0 ELSE 1 END, datetime(scheduled_at) ASC, id ASC
+      LIMIT 1
+    `).get();
+    return row ? this.getTask(row.id) : null;
+  };
+
+  DB.prototype.getNextScheduledAt = function getNextScheduledAtWithGlobalScope(instanceId) {
+    const id = Number(instanceId);
+    if (id > 0) return originalGetNextScheduledAt.call(this, id);
+    const row = this.db.prepare(`
+      SELECT scheduled_at FROM tasks
+      WHERE status='pending' AND scheduled_at IS NOT NULL
+        AND datetime(scheduled_at) > datetime('now')
+      ORDER BY datetime(scheduled_at) ASC LIMIT 1
+    `).get();
+    return row?.scheduled_at || null;
+  };
+
+  DB.prototype.countPendingTasks = function countPendingTasksWithGlobalScope(instanceId) {
+    const id = Number(instanceId);
+    if (id > 0) return originalCountPendingTasks.call(this, id);
+    return this.db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE status='pending'`).get().c;
+  };
+
+  DB.prototype.getPendingTaskSummary = function getPendingTaskSummaryWithGlobalScope(instanceId) {
+    const id = Number(instanceId);
+    if (id > 0) return originalGetPendingTaskSummary.call(this, id);
+    const row = this.db.prepare(`SELECT COUNT(*) AS task_count FROM tasks WHERE status='pending'`).get();
+    const channels = this.db.prepare(`
+      SELECT DISTINCT c.name
+      FROM tasks t
+      JOIN task_targets tt ON tt.task_id=t.id
+      JOIN channels c ON c.id=tt.channel_id
+      WHERE t.status='pending' AND tt.status!='success'
+      ORDER BY c.name COLLATE NOCASE
+    `).all().map(item => item.name);
+    return { taskCount: row.task_count, channels };
   };
 };
