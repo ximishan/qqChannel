@@ -10,7 +10,6 @@ let browserManager;
 let scheduler;
 let mainWindow;
 
-// 开发版与打包版共用稳定的数据目录，避免 productName 改变后登录态看似丢失。
 app.setPath('userData', path.join(app.getPath('appData'), 'tencent-channel-publisher-demo'));
 
 function createWindow() {
@@ -26,7 +25,6 @@ function createWindow() {
       nodeIntegration: false
     }
   });
-
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '../renderer/index.html'));
   return win;
@@ -41,9 +39,7 @@ app.whenReady().then(() => {
   registerIPC();
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 function schedulerIsBusy(instanceId) {
   if (!scheduler) return false;
@@ -60,7 +56,7 @@ function registerIPC() {
   ipcMain.handle('instances:list', () => db.listInstances());
   ipcMain.handle('instances:create', (_, name) => {
     const cleanName = String(name || '').trim();
-    if (!cleanName) throw new Error('实例名称不能为空');
+    if (!cleanName) throw new Error('频道分组名称不能为空');
     const result = db.createInstance(cleanName);
     return { id: Number(result.lastInsertRowid), name: cleanName };
   });
@@ -68,84 +64,48 @@ function registerIPC() {
   ipcMain.handle('instances:summary', (_, id) => db.getInstanceSummary(id));
   ipcMain.handle('instances:delete', async (_, id) => {
     const instanceId = Number(id);
-    if (schedulerIsBusy(instanceId)) {
-      throw new Error('该实例的发布队列正在运行，请先停止队列后再删除实例');
-    }
+    if (schedulerIsBusy(instanceId)) throw new Error('该频道分组的发布队列正在运行，请先停止队列');
     const summary = db.getInstanceSummary(instanceId);
-    if (Number(summary.running_task_count) > 0) {
-      throw new Error('该实例仍有正在发布的任务，请等待任务完成后再删除实例');
-    }
+    if (Number(summary.running_task_count) > 0) throw new Error('该频道分组仍有正在发布的任务，请等待任务完成');
     await browserManager.destroyInstance(instanceId);
     return db.deleteInstance(instanceId);
   });
 
   ipcMain.handle('channels:list', (_, instanceId) => db.listChannels(instanceId));
+  ipcMain.handle('channels:overview', () => db.listChannelAssignments());
+  ipcMain.handle('channels:move', (_, data) => db.moveChannel(data.id, data.instanceId));
   ipcMain.handle('channels:add', (_, data) => db.addChannel(data.instanceId, data.name, data.url));
   ipcMain.handle('channels:updateName', (_, data) => db.updateChannelName(data.id, data.name));
   ipcMain.handle('channels:delete', (_, id) => db.deleteChannel(id));
 
   ipcMain.handle('tasks:list', (_, data) => db.listTasks(data.instanceId, data.page, data.pageSize));
   ipcMain.handle('tasks:pendingSummary', (_, instanceId) => db.getPendingTaskSummary(instanceId));
-  ipcMain.handle('tasks:create', (_, data) => db.createTask(
-    data.instanceId,
-    data.title,
-    data.body,
-    data.mediaPath,
-    data.channelIds,
-    data.mediaType,
-    data.scheduledAt,
-    data.intervalMinSeconds,
-    data.intervalMaxSeconds
-  ));
+  ipcMain.handle('tasks:create', (_, data) => db.createTask(data.instanceId, data.title, data.body, data.mediaPath, data.channelIds, data.mediaType, data.scheduledAt, data.intervalMinSeconds, data.intervalMaxSeconds));
   ipcMain.handle('tasks:deleteMany', (_, taskIds) => db.deleteTasks(taskIds));
   ipcMain.handle('tasks:run', async (_, taskId) => {
     const task = db.getTask(taskId);
     if (!task) throw new Error('任务不存在');
-
-    if (schedulerIsBusy(task.instance_id)) {
-      throw new Error('当前实例的发布队列正在运行，请先停止队列后再手动执行任务，避免同一任务被重复执行');
-    }
-
-    if (!task.targets || task.targets.length === 0) {
-      throw new Error('当前任务没有目标频道，无法执行');
-    }
-
+    if (schedulerIsBusy(task.instance_id)) throw new Error('当前频道分组的发布队列正在运行，请先停止队列后再手动执行任务');
+    if (!task.targets || task.targets.length === 0) throw new Error('当前任务没有目标频道，无法执行');
     const executableTargets = task.targets.filter(target => target.status !== 'success');
-    if (executableTargets.length === 0) {
-      throw new Error(`任务 #${task.id} 已经全部发布成功，没有需要再次执行的目标频道`);
-    }
-
+    if (executableTargets.length === 0) throw new Error(`任务 #${task.id} 已经全部发布成功`);
     await hidePublishingBrowser(task.instance_id);
     return browserManager.publishTask(task);
   });
-
   ipcMain.handle('tasks:retryFailed', async (_, taskId) => {
     const before = db.getTask(taskId);
     if (!before) throw new Error('任务不存在');
-
-    if (schedulerIsBusy(before.instance_id)) {
-      throw new Error('当前实例的发布队列正在运行，请先停止队列后再重试失败任务');
-    }
-
-    if (!before.targets?.some(target => target.status === 'failed')) {
-      throw new Error(`任务 #${taskId} 没有失败的目标频道，不需要重试`);
-    }
-
+    if (schedulerIsBusy(before.instance_id)) throw new Error('当前频道分组的发布队列正在运行，请先停止队列');
+    if (!before.targets?.some(target => target.status === 'failed')) throw new Error(`任务 #${taskId} 没有失败的目标频道`);
     db.resetFailedTargets(taskId);
     const task = db.getTask(taskId);
     await hidePublishingBrowser(task.instance_id);
     return browserManager.publishTask(task);
   });
 
-  ipcMain.handle('scheduler:start', async (_, instanceId) => {
-    await hidePublishingBrowser(instanceId);
-    return scheduler.start(instanceId);
-  });
+  ipcMain.handle('scheduler:start', async (_, instanceId) => { await hidePublishingBrowser(instanceId); return scheduler.start(instanceId); });
   ipcMain.handle('scheduler:pause', (_, instanceId) => scheduler.pause(instanceId));
-  ipcMain.handle('scheduler:resume', async (_, instanceId) => {
-    await hidePublishingBrowser(instanceId);
-    return scheduler.resume(instanceId);
-  });
+  ipcMain.handle('scheduler:resume', async (_, instanceId) => { await hidePublishingBrowser(instanceId); return scheduler.resume(instanceId); });
   ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(instanceId));
   ipcMain.handle('scheduler:state', (_, instanceId) => scheduler.getState(instanceId));
 
@@ -155,6 +115,7 @@ function registerIPC() {
 
   ipcMain.handle('browser:login', async () => browserManager.beginPublishingLogin());
   ipcMain.handle('browser:status', async () => browserManager.getPublishingLoginStatus());
+  ipcMain.handle('browser:logout', async () => browserManager.logoutPublishing());
   ipcMain.handle('publisher:pollLogin', async () => browserManager.pollPublishingLogin());
   ipcMain.handle('browser:view', async (_, data) => browserManager.setViewState(data));
   ipcMain.handle('browser:home', async (_, instanceId) => browserManager.navigate(instanceId));
@@ -165,32 +126,19 @@ function registerIPC() {
   ipcMain.handle('settings:set', (_, data) => db.setSetting(data.key, data.value));
 
   ipcMain.handle('dialog:video', async () => {
-    const r = await dialog.showOpenDialog({
-      properties: ['openFile'],
-      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }]
-    });
+    const r = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }] });
     return r.canceled ? null : r.filePaths[0];
   });
-
   ipcMain.handle('dialog:image', async () => {
-    const r = await dialog.showOpenDialog({
-      properties: ['openFile'],
-      filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] }]
-    });
+    const r = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] }] });
     return r.canceled ? null : r.filePaths[0];
   });
-
   ipcMain.handle('dialog:videoFolder', async () => {
     const r = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths[0]) return null;
-
     const folder = r.filePaths[0];
     const supported = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.wmv']);
-    const files = fs.readdirSync(folder, { withFileTypes: true })
-      .filter(entry => entry.isFile() && supported.has(path.extname(entry.name).toLowerCase()))
-      .map(entry => path.join(folder, entry.name))
-      .sort((a, b) => path.basename(a).localeCompare(path.basename(b), 'zh-CN', { numeric: true, sensitivity: 'base' }));
-
+    const files = fs.readdirSync(folder, { withFileTypes: true }).filter(entry => entry.isFile() && supported.has(path.extname(entry.name).toLowerCase())).map(entry => path.join(folder, entry.name)).sort((a, b) => path.basename(a).localeCompare(path.basename(b), 'zh-CN', { numeric: true, sensitivity: 'base' }));
     return { folder, files };
   });
 
