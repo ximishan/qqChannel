@@ -27,22 +27,6 @@ module.exports = function installSingleAccountSupport(DB, BrowserManager) {
     reset();
   };
 
-  // 单账号版切换 QQ 时，旧 QQ 的频道/任务不能继续出现在新 QQ 下。
-  // 因此只有在 QQ 授权确认退出成功之后，才清理账号相关的本地数据。
-  // 全局运行参数/选择器配置继续保留。
-  DB.prototype.resetSingleAccountWorkspace = function resetSingleAccountWorkspace() {
-    const reset = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM task_targets').run();
-      this.db.prepare('DELETE FROM tasks').run();
-      this.db.prepare('DELETE FROM channels').run();
-      this.db.prepare('DELETE FROM instances').run();
-      this.db.prepare('DELETE FROM logs').run();
-      this.db.prepare("DELETE FROM settings WHERE key IN ('task_list_group_filter','task_list_channel_search')").run();
-      this.db.prepare('INSERT INTO instances(name) VALUES (?)').run('默认频道分组');
-    });
-    reset();
-  };
-
   TencentChannelCli.prototype.logout = async function logoutCurrentQQ() {
     const attempts = [
       ['login', 'logout', '--json'],
@@ -68,6 +52,7 @@ module.exports = function installSingleAccountSupport(DB, BrowserManager) {
 
   BrowserManager.prototype.logoutPublishing = async function logoutPublishing() {
     const cli = this.getChannelCli();
+    const account = this.db.getActiveQQAccount?.() || null;
     const result = await cli.logout();
 
     for (const record of this.views.values()) {
@@ -80,8 +65,10 @@ module.exports = function installSingleAccountSupport(DB, BrowserManager) {
     }
     try { fs.rmSync(this.authStatePath(), { force: true }); } catch (_) {}
 
-    this.db.resetSingleAccountWorkspace();
-    this.db.log('info', '已退出当前 QQ 授权；已清空上一账号的频道分组、频道和任务数据');
-    return { ...result, loggedIn: false, workspaceReset: true };
+    // 只解除“当前账号”，绝不删除该账号的频道分组、频道、任务和历史数据。
+    // 下次登录同一个 QQ 时，会通过 account_id 自动恢复原工作区；登录其他 QQ 则显示其他工作区。
+    this.db.deactivateQQAccount?.();
+    this.db.log('info', `已退出当前 QQ 授权${account ? `（本地账号 #${account.id}）` : ''}；账号工作区数据已保留`);
+    return { ...result, loggedIn: false, accountId: account?.id || null, workspacePreserved: true };
   };
 };
