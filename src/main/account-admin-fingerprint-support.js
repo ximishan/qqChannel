@@ -1,5 +1,3 @@
-const crypto = require('crypto');
-
 function text(value) {
   return String(value == null ? '' : value).trim();
 }
@@ -12,91 +10,48 @@ function normalizeGuild(item = {}) {
   };
 }
 
-function normalizeAdmin(member = {}, guild = {}) {
+function normalizeOwner(member = {}, guild = {}) {
   const user = member.user && typeof member.user === 'object' ? member.user : member;
   return {
     guildId: guild.guildId,
     guildNumber: guild.guildNumber,
     guildName: guild.name,
     tinyId: text(user.tiny_id ?? user.tinyId ?? user.user_id ?? user.userId ?? member.tiny_id ?? member.tinyId),
-    nickname: text(user.nickname ?? user.nick ?? user.name ?? member.nickname ?? member.nick ?? member.name),
-    roleId: text(member.role_id ?? member.roleId),
-    roleName: text(member.role_name ?? member.roleName ?? member.title)
+    nickname: text(user.nickname ?? user.nick ?? user.name ?? member.nickname ?? member.nick ?? member.name)
   };
 }
 
-function shuffle(items) {
-  const out = [...items];
-  for (let i = out.length - 1; i > 0; i -= 1) {
-    const j = crypto.randomInt(i + 1);
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
-
-async function listManagedGuilds(cli) {
+async function getOneCreatedGuild(cli) {
   const data = await cli.run(['manage', 'get-my-join-guild-info', '--json'], {});
-  const out = [];
-  const seen = new Set();
-  for (const groupName of ['created_guilds', 'managed_guilds']) {
-    for (const raw of data[groupName] || []) {
-      const guild = normalizeGuild(raw);
-      if (!guild.guildId || seen.has(guild.guildId)) continue;
-      seen.add(guild.guildId);
-      out.push(guild);
-    }
+  for (const raw of data.created_guilds || []) {
+    const guild = normalizeGuild(raw);
+    if (guild.guildId) return guild;
   }
-  return out;
+  return null;
 }
 
-async function getSingleGuildAdmin(cli, guild) {
+async function getGuildOwner(cli, guild) {
   let nextPageToken = '';
   for (let page = 0; page < 100; page += 1) {
     const payload = { guild_id: guild.guildId };
     if (nextPageToken) payload.next_page_token = nextPageToken;
     const data = await cli.run(['manage', 'get-guild-member-list', '--json'], payload);
-
-    // tencent-channel-cli 已经把成员按 owners / admins / robots / members 分类。
-    // 当前项目约定每个频道只有一个管理员，所以直接读取 admins；若该账号是频道主，
-    // admins 为空时再读取 owners。不要再从普通 members 中根据 role_id 猜管理员。
-    const directAdmins = Array.isArray(data.admins) ? data.admins : [];
     const owners = Array.isArray(data.owners) ? data.owners : [];
-    const candidates = directAdmins.length ? directAdmins : owners;
-    const normalized = candidates.map(member => normalizeAdmin(member, guild)).filter(item => item.tinyId);
-    if (normalized.length) return normalized[0];
-
+    const owner = owners.map(member => normalizeOwner(member, guild)).find(item => item.tinyId);
+    if (owner) return owner;
     nextPageToken = text(data.next_page_token ?? data.nextPageToken);
     if (!nextPageToken) break;
   }
   return null;
 }
 
-async function detectCurrentAdmin(manager) {
+async function detectCurrentOwner(manager) {
   const cli = manager.getChannelCli();
-  const guilds = await listManagedGuilds(cli);
-  if (!guilds.length) throw new Error('当前账号没有可管理的频道');
-
-  const sampleSize = Math.min(guilds.length, guilds.length >= 3 ? 3 : guilds.length);
-  const sampledGuilds = shuffle(guilds).slice(0, sampleSize);
-  const admins = [];
-  for (const guild of sampledGuilds) {
-    const admin = await getSingleGuildAdmin(cli, guild);
-    if (!admin) throw new Error(`频道“${guild.name || guild.guildNumber || guild.guildId}”没有读取到管理员`);
-    admins.push(admin);
-  }
-
-  const tinyIds = [...new Set(admins.map(item => item.tinyId).filter(Boolean))];
-  if (tinyIds.length !== 1) {
-    throw new Error(`抽取的 ${admins.length} 个频道管理员不一致，无法识别当前账号`);
-  }
-
-  return {
-    tinyId: tinyIds[0],
-    nickname: admins.find(item => item.nickname)?.nickname || '',
-    admins,
-    sampledGuildCount: sampledGuilds.length,
-    managedGuildCount: guilds.length
-  };
+  const guild = await getOneCreatedGuild(cli);
+  if (!guild) throw new Error('当前账号没有创建过频道，无法识别账号');
+  const owner = await getGuildOwner(cli, guild);
+  if (!owner) throw new Error(`频道“${guild.name || guild.guildNumber || guild.guildId}”没有读取到频道主`);
+  return { ...owner, sampledGuildCount: 1 };
 }
 
 module.exports = function installAccountAdminFingerprintSupport(DB, BrowserManager) {
@@ -167,7 +122,7 @@ module.exports = function installAccountAdminFingerprintSupport(DB, BrowserManag
     return account;
   };
 
-  BrowserManager.prototype.bindLoggedInQQAccount = async function bindLoggedInQQAccountByAdminTinyId(status = {}, options = {}) {
+  BrowserManager.prototype.bindLoggedInQQAccount = async function bindLoggedInQQAccountByGuildOwner(status = {}, options = {}) {
     if (!status?.loggedIn && !status?.valid && !status?.alreadyLoggedIn) return status;
 
     const active = this.db.getActiveQQAccount?.();
@@ -183,28 +138,28 @@ module.exports = function installAccountAdminFingerprintSupport(DB, BrowserManag
     }
 
     try {
-      const detected = await detectCurrentAdmin(this);
+      const detected = await detectCurrentOwner(this);
       const tinyId = detected.tinyId;
       let account = this.db.findQQAccountByAdminTinyId(tinyId);
 
       if (account) {
         account = this.db.activateExistingQQAccount(account.id, detected.nickname);
         this.db.saveQQAdminIdentity(account.id, tinyId, detected.nickname);
-        this.db.log('info', `QQ账号识别：管理员 tiny_id=${tinyId} 命中本地账号 #${account.id}`);
+        this.db.log('info', `QQ账号识别：频道主 tiny_id=${tinyId} 命中本地账号 #${account.id}`);
       } else {
         account = this.db.bindAdminTinyIdToLegacyAccountIfNeeded(tinyId, detected.nickname);
         if (account) {
-          this.db.log('info', `QQ账号识别：首次启用管理员识别，已将 tiny_id=${tinyId} 绑定到原账号 #${account.id}`);
+          this.db.log('info', `QQ账号识别：首次启用频道主识别，已将 tiny_id=${tinyId} 绑定到原账号 #${account.id}`);
         } else {
           const identity = {
-            externalKey: `admin:${tinyId}`,
-            identityType: 'guild_admin_tiny_id',
+            externalKey: `owner:${tinyId}`,
+            identityType: 'guild_owner_tiny_id',
             identityValue: tinyId,
-            identityMeta: JSON.stringify({ sampledGuildCount: detected.sampledGuildCount })
+            identityMeta: JSON.stringify({ guildId: detected.guildId, guildNumber: detected.guildNumber })
           };
           account = this.db.activateQQAccount(identity, detected.nickname);
           this.db.saveQQAdminIdentity(account.id, tinyId, detected.nickname);
-          this.db.log('info', `QQ账号识别：管理员 tiny_id=${tinyId} 未命中，创建新账号 #${account.id}`);
+          this.db.log('info', `QQ账号识别：频道主 tiny_id=${tinyId} 未命中，创建新账号 #${account.id}`);
         }
       }
 
@@ -212,11 +167,12 @@ module.exports = function installAccountAdminFingerprintSupport(DB, BrowserManag
         ...status,
         loggedIn: true,
         accountId: Number(account.id),
-        accountIdentityType: 'guild_admin_tiny_id',
+        accountIdentityType: 'guild_owner_tiny_id',
         accountBindingRequired: false,
-        adminTinyId: tinyId,
-        sampledGuildCount: detected.sampledGuildCount,
-        managedGuildCount: detected.managedGuildCount,
+        ownerTinyId: tinyId,
+        ownerGuildId: detected.guildId,
+        ownerGuildNumber: detected.guildNumber,
+        sampledGuildCount: 1,
         name: detected.nickname || account.display_name || `QQ账号 #${account.id}`
       };
     } catch (error) {
