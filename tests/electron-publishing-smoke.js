@@ -38,6 +38,23 @@ app.whenReady().then(async () => {
     db.setSetting('max_retries', '0');
     db.setSetting('target_interval_seconds', '0');
     const instance = db.listInstances()[0];
+    const secondInstanceId = Number(db.createInstance('账号实例 2').lastInsertRowid);
+    assert.notEqual(manager.partitionName(instance.id), manager.partitionName(secondInstanceId));
+    assert.notEqual(manager.authStatePath(instance.id), manager.authStatePath(secondInstanceId));
+    db.setInstanceLoginState(instance.id, true, '账号A');
+    db.setInstanceLoginState(secondInstanceId, false, '');
+    const instanceStates = db.listInstances();
+    assert.equal(instanceStates.find(item => item.id === instance.id).login_status, 'logged_in');
+    assert.equal(instanceStates.find(item => item.id === secondInstanceId).login_status, 'logged_out');
+
+    const imported = db.importRemoteChannels(secondInstanceId, [{
+      name: '实例二频道',
+      url: 'https://pd.qq.com/g/pd20000002',
+      guildNumber: 'pd20000002'
+    }]);
+    assert.deepEqual(imported, { created: 1, updated: 0, skipped: 0 });
+    assert.equal(db.listChannels(secondInstanceId).length, 1);
+
     const channelId = Number(db.addChannel(instance.id, '测试频道', 'https://pd.qq.com/g/pd12345678').lastInsertRowid);
     const taskId = db.createTask(instance.id, '纯文本内容', '首评内容', '', [channelId], 'text');
     const result = await manager.publishTask(db.getTask(taskId));

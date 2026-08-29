@@ -23,7 +23,10 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
     // 只迁移尚未成功的任务，避免改动历史成功记录。
     this.db.prepare(`
       UPDATE tasks
-      SET comment = COALESCE(comment, body),
+      SET comment = CASE
+            WHEN TRIM(COALESCE(comment,''))='' THEN COALESCE(body,'')
+            ELSE comment
+          END,
           body = CASE
             WHEN media_type='text' AND TRIM(COALESCE(title,'')) <> '' THEN title
             ELSE ''
@@ -116,6 +119,14 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
     if (type === 'image' && !mediaPath) throw new Error('图片任务必须选择图片文件');
     if (type === 'video' && !mediaPath) throw new Error('视频任务必须选择视频文件');
     if (!Array.isArray(channelIds) || !channelIds.length) throw new Error('至少选择一个目标频道');
+    this.getInstanceSummary(Number(instanceId));
+    const ids = [...new Set(channelIds.map(Number).filter(Number.isInteger))];
+    if (!ids.length) throw new Error('至少选择一个有效频道');
+    const placeholders = ids.map(() => '?').join(',');
+    const ownedCount = this.db.prepare(
+      `SELECT COUNT(*) AS c FROM channels WHERE instance_id=? AND id IN (${placeholders})`
+    ).get(Number(instanceId), ...ids).c;
+    if (ownedCount !== ids.length) throw new Error('目标频道中包含不属于该账号实例的频道');
 
     const normalizedScheduledAt = scheduledAt ? new Date(scheduledAt).toISOString() : null;
     let minSeconds = intervalMinSeconds === '' || intervalMinSeconds == null ? null : Math.max(0, Math.floor(Number(intervalMinSeconds) || 0));
@@ -142,7 +153,7 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
         maxSeconds
       );
       const targetIns = this.db.prepare(`INSERT INTO task_targets(task_id,channel_id,status) VALUES (?,?, 'pending')`);
-      for (const cid of channelIds) targetIns.run(r.lastInsertRowid, Number(cid));
+      for (const cid of ids) targetIns.run(r.lastInsertRowid, Number(cid));
       return r.lastInsertRowid;
     });
     return tx();
@@ -291,7 +302,11 @@ module.exports = function installCommentSupport(DB, BrowserManager) {
 
     if (!postAlreadyPublished) {
       result = await originalPublishOneTarget.call(this, record, task, target, selectors, attempt);
-      this.db.markTargetPostPublished(target.id);
+      this.db.markTargetPostPublished(target.id, result?.postUrl || '');
+      if (result?.postUrl) {
+        target.post_url = result.postUrl;
+        await this.navigate(task.instance_id, result.postUrl);
+      }
       target.post_published = 1;
     }
 

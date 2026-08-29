@@ -42,8 +42,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 function schedulerScopeId(fallbackInstanceId = 0) {
-  const filteredGroupId = Math.max(0, Math.floor(Number(db?.getSetting('task_list_group_filter', '0')) || 0));
-  return filteredGroupId > 0 ? filteredGroupId : 0;
+  return Math.max(0, Math.floor(Number(fallbackInstanceId) || 0));
 }
 
 function schedulerIsBusy(instanceId) {
@@ -96,7 +95,7 @@ function registerIPC() {
   ipcMain.handle('instances:list', () => db.listInstances());
   ipcMain.handle('instances:create', (_, name) => {
     const cleanName = String(name || '').trim();
-    if (!cleanName) throw new Error('频道分组名称不能为空');
+    if (!cleanName) throw new Error('实例名称不能为空');
     const result = db.createInstance(cleanName);
     return { id: Number(result.lastInsertRowid), name: cleanName };
   });
@@ -106,7 +105,7 @@ function registerIPC() {
     const instanceId = Number(id);
     if (schedulerIsBusy(instanceId)) throw new Error('发布队列正在运行，请先停止队列');
     const summary = db.getInstanceSummary(instanceId);
-    if (Number(summary.running_task_count) > 0) throw new Error('该频道分组仍有正在发布的任务，请等待任务完成');
+    if (Number(summary.running_task_count) > 0) throw new Error('该实例仍有正在发布的任务，请等待任务完成');
     await browserManager.destroyInstance(instanceId);
     return db.deleteInstance(instanceId);
   });
@@ -117,6 +116,8 @@ function registerIPC() {
   ipcMain.handle('channels:add', (_, data) => db.addChannel(data.instanceId, data.name, data.url));
   ipcMain.handle('channels:updateName', (_, data) => db.updateChannelName(data.id, data.name));
   ipcMain.handle('channels:delete', (_, id) => db.deleteChannel(id));
+  ipcMain.handle('channels:remoteList', async (_, instanceId) => browserManager.collectChannels(instanceId));
+  ipcMain.handle('channels:importRemote', (_, data) => db.importRemoteChannels(data.instanceId, data.channels || data.guilds));
 
   ipcMain.handle('tasks:list', (_, data) => db.listTasks(data.instanceId, data.page, data.pageSize));
   ipcMain.handle('tasks:pendingSummary', (_, instanceId) => db.getPendingTaskSummary(schedulerScopeId(instanceId)));
@@ -156,19 +157,34 @@ function registerIPC() {
   });
   ipcMain.handle('scheduler:stop', (_, instanceId) => scheduler.stop(schedulerScopeId(instanceId)));
   ipcMain.handle('scheduler:state', (_, instanceId) => scheduler.getState(schedulerScopeId(instanceId)));
+  ipcMain.handle('scheduler:startAll', async () => {
+    const instances = db.listInstances();
+    const started = [];
+    for (const instance of instances) {
+      if (db.countPendingTasks(instance.id) <= 0) continue;
+      await hidePublishingBrowser(instance.id);
+      await scheduler.start(instance.id);
+      started.push({ id: instance.id, name: instance.name });
+    }
+    return { started, count: started.length };
+  });
+  ipcMain.handle('scheduler:stopAll', () => {
+    const stopped = db.listInstances().map(instance => scheduler.stop(instance.id));
+    return { stopped, count: stopped.length };
+  });
 
   ipcMain.handle('selectors:list', () => db.getSelectors());
   ipcMain.handle('selectors:save', (_, data) => db.saveSelector(data.key, data.value, data.timeout));
   ipcMain.handle('selectors:test', async (_, data) => browserManager.testSelector(data.instanceId, data.selector, data.url));
 
-  ipcMain.handle('browser:login', async () => browserManager.beginPublishingLogin());
-  ipcMain.handle('browser:status', async () => browserManager.getPublishingLoginStatus());
-  ipcMain.handle('browser:logout', async () => {
-    const busyGroup = db.listInstances().find(instance => schedulerIsBusy(instance.id));
-    if (busyGroup) throw new Error(`频道分组“${busyGroup.name}”的发布队列仍在运行，请先停止发布再退出账号`);
-    return browserManager.logoutPublishing();
+  ipcMain.handle('browser:login', async (_, instanceId) => browserManager.beginPublishingLogin(instanceId));
+  ipcMain.handle('browser:status', async (_, instanceId) => browserManager.getPublishingLoginStatus(instanceId));
+  ipcMain.handle('browser:logout', async (_, instanceId) => {
+    const instance = db.getInstanceSummary(instanceId);
+    if (schedulerIsBusy(instance.id)) throw new Error(`实例“${instance.name}”的发布队列仍在运行，请先停止发布再退出账号`);
+    return browserManager.logoutPublishing(instance.id);
   });
-  ipcMain.handle('publisher:pollLogin', async () => browserManager.pollPublishingLogin());
+  ipcMain.handle('publisher:pollLogin', async (_, instanceId) => browserManager.pollPublishingLogin(instanceId));
   ipcMain.handle('browser:view', async (_, data) => browserManager.setViewState(data));
   ipcMain.handle('browser:home', async (_, instanceId) => browserManager.navigate(instanceId));
   ipcMain.handle('browser:back', async (_, instanceId) => browserManager.goBack(instanceId));

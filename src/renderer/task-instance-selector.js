@@ -57,7 +57,7 @@
       const expanded = expandedInstances.has(instanceId);
       const preview = group.channels.length
         ? group.channels.slice(0, 4).map(channel => escapeHtmlLocal(channel.name)).join('、') + (group.channels.length > 4 ? ` 等 ${group.channels.length} 个频道` : '')
-        : '该实例暂未绑定频道';
+        : '该账号实例暂未绑定频道';
 
       const channelsHtml = group.channels.map(channel => `
         <label style="display:flex;align-items:center;gap:10px;padding:8px 10px 8px 34px;border-top:1px solid #eef2f7;cursor:pointer;">

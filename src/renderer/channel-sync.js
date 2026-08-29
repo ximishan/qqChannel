@@ -69,13 +69,14 @@
     }
     if (result && !silent) result.textContent = '正在从当前 QQ 授权账号拉取频道...';
     try {
-      remoteGuilds = await window.api.listRemoteChannels();
+      const instanceId = Number(document.querySelector('#channelInstanceSelect')?.value || 0);
+      if (!instanceId) throw new Error('请先选择账号实例');
+      remoteGuilds = await window.api.listRemoteChannels(instanceId);
       renderRemoteGuilds();
       const publishable = remoteGuilds.filter(item => item.selectable).length;
-      const joined = remoteGuilds.length - publishable;
       if (result) {
         result.style.color = '#17a663';
-        result.textContent = `同步完成：可导入 ${publishable} 个频道${joined ? `，另有 ${joined} 个普通加入频道未勾选` : ''}。`;
+        result.textContent = `同步完成：当前实例检测到 ${publishable} 个频道。`;
       }
     } catch (error) {
       if (result) {
@@ -98,8 +99,8 @@
     const groupSelect = document.querySelector('#channelInstanceSelect');
     const instanceId = Number(groupSelect?.value || 0);
     if (!instanceId) return alert('请先选择目标频道分组');
-    const groupName = groupSelect?.selectedOptions?.[0]?.textContent || '当前频道分组';
-    if (!confirm(`将 ${selected.length} 个频道导入到频道分组“${groupName}”。\n\n已导入过的频道只更新信息，不会重复创建，也不会自动移动分组。是否继续？`)) return;
+    const groupName = groupSelect?.selectedOptions?.[0]?.textContent || '当前实例';
+    if (!confirm(`将 ${selected.length} 个频道绑定到账号实例“${groupName}”。\n\n当前实例中已存在的频道只更新信息，不会重复创建。是否继续？`)) return;
 
     const button = document.querySelector('#btnImportQQChannels');
     const result = document.querySelector('#qqChannelSyncResult');
@@ -110,11 +111,11 @@
     try {
       const response = await window.api.importRemoteChannels({
         instanceId,
-        guilds: selected.map(item => ({ guildId: item.guildId, guildNumber: item.guildNumber, name: item.name, source: item.source }))
+        channels: selected.map(item => ({ guildId: item.guildId, guildNumber: item.guildNumber, name: item.name, url: item.url, source: item.source }))
       });
       if (result) {
         result.style.color = '#17a663';
-        result.textContent = `导入完成：新增 ${response.created} 个，更新 ${response.updated} 个，跳过 ${response.skipped} 个。以后移动频道请直接使用“频道分组总览”。`;
+        result.textContent = `导入完成：新增 ${response.created} 个，更新 ${response.updated} 个，跳过 ${response.skipped} 个。`;
       }
       document.querySelector('#btnRefreshChannels')?.click();
     } catch (error) {
@@ -143,7 +144,7 @@
       <div class="sync-head">
         <div>
           <h3>从 QQ 自动同步频道</h3>
-          <div class="sync-note">第一次登录后把 QQ 频道导入软件即可；之后频道分组和移动都在本地管理。</div>
+          <div class="sync-note">先选择实例并完成该实例的 QQ 登录，再从内置浏览器页面识别频道。</div>
         </div>
         <div class="sync-actions">
           <button type="button" id="btnToggleManualChannel">手动添加（备用）</button>
@@ -152,7 +153,7 @@
       </div>
       <div id="qqChannelRemoteList"><div class="hint" style="padding:16px">登录 QQ 后会自动尝试拉取频道，也可以点击“同步我的频道”。</div></div>
       <div class="sync-footer">
-        <span class="hint">选择下方“所属频道分组”，勾选频道后导入。已导入频道会显示当前所属分组。</span>
+        <span class="hint">识别结果只属于当前账号实例；勾选后导入到当前实例。</span>
         <div class="sync-actions">
           <button type="button" id="btnSelectPublishableChannels">全选可发布频道</button>
           <button type="button" class="primary" id="btnImportQQChannels">导入选中频道</button>

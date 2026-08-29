@@ -72,9 +72,18 @@ class DB {
     this.ensureColumn('tasks', 'scheduled_at', 'TEXT');
     this.ensureColumn('tasks', 'interval_min_seconds', 'INTEGER');
     this.ensureColumn('tasks', 'interval_max_seconds', 'INTEGER');
+    this.ensureColumn('instances', 'login_name', 'TEXT');
+    this.ensureColumn('instances', 'login_status', "TEXT NOT NULL DEFAULT 'unknown'");
+    this.ensureColumn('instances', 'last_login_check_at', 'TEXT');
+    // 这些字段由旧版 CLI 模式创建。DOM 模式不依赖它们，但保留字段可让旧数据
+    // 无损升级，也避免任务列表读取旧频道记录时出现列不存在。
+    this.ensureColumn('channels', 'guild_id', 'TEXT');
+    this.ensureColumn('channels', 'guild_number', 'TEXT');
+    this.ensureColumn('channels', 'post_channel_id', 'TEXT');
+    this.ensureColumn('channels', 'post_channel_name', 'TEXT');
 
     const count = this.db.prepare('SELECT COUNT(*) AS c FROM instances').get().c;
-    if (!count) this.db.prepare('INSERT INTO instances(name) VALUES (?)').run('默认频道分组');
+    if (!count) this.db.prepare('INSERT INTO instances(name) VALUES (?)').run('账号实例 1');
 
     const defaults = [
       ['composer_entry', '发帖入口', 'text=期待你的分享\n[placeholder*="期待你的分享"]', 10000],
@@ -122,6 +131,14 @@ class DB {
 
   listInstances() { return this.db.prepare('SELECT * FROM instances ORDER BY id ASC').all(); }
   createInstance(name) { return this.db.prepare('INSERT INTO instances(name) VALUES (?)').run(name); }
+  setInstanceLoginState(id, loggedIn, loginName = '') {
+    const status = loggedIn ? 'logged_in' : 'logged_out';
+    this.db.prepare(`
+      UPDATE instances
+      SET login_status=?, login_name=?, last_login_check_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(status, loggedIn ? String(loginName || '').trim() : '', Number(id));
+  }
   updateInstanceName(id, name) {
     const normalizedId = Number(id);
     const normalizedName = String(name || '').trim();
@@ -183,6 +200,49 @@ class DB {
     if (!normalizedName) throw new Error('频道名称不能为空');
     if (!/^https:\/\/pd\.qq\.com\/g\//i.test(normalizedUrl)) throw new Error('腾讯频道 URL 无效');
     return this.db.prepare('INSERT INTO channels(instance_id,name,url) VALUES (?,?,?)').run(normalizedInstanceId, normalizedName, normalizedUrl);
+  }
+  importRemoteChannels(instanceId, channels = []) {
+    const normalizedInstanceId = Number(instanceId);
+    this.getInstanceSummary(normalizedInstanceId);
+    if (!Array.isArray(channels) || !channels.length) throw new Error('请至少选择一个频道');
+
+    const find = this.db.prepare(`
+      SELECT id FROM channels
+      WHERE instance_id=? AND (url=? OR (COALESCE(guild_number,'')<>'' AND guild_number=?))
+      ORDER BY id ASC LIMIT 1
+    `);
+    const insert = this.db.prepare(`
+      INSERT INTO channels(instance_id,name,url,enabled,guild_number)
+      VALUES (?,?,?,1,?)
+    `);
+    const update = this.db.prepare(`
+      UPDATE channels SET name=?,url=?,enabled=1,guild_number=? WHERE id=?
+    `);
+
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const transaction = this.db.transaction(() => {
+      for (const item of channels) {
+        const name = String(item?.name || '').trim();
+        const url = String(item?.url || '').trim();
+        const guildNumber = String(item?.guildNumber || '').trim() || url.match(/\/g\/([^/?#]+)/i)?.[1] || '';
+        if (!name || !/^https:\/\/pd\.qq\.com\/g\//i.test(url)) {
+          skipped += 1;
+          continue;
+        }
+        const existing = find.get(normalizedInstanceId, url, guildNumber);
+        if (existing) {
+          update.run(name, url, guildNumber, existing.id);
+          updated += 1;
+        } else {
+          insert.run(normalizedInstanceId, name, url, guildNumber);
+          created += 1;
+        }
+      }
+    });
+    transaction();
+    return { created, updated, skipped };
   }
   updateChannelName(id, name) {
     const normalizedName = String(name || '').trim();

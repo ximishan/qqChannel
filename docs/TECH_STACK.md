@@ -7,7 +7,7 @@
 核心目标：
 
 - 使用桌面 GUI 管理多个独立账号/实例。
-- 使用 Playwright 驱动 Chromium 操作 `pd.qq.com`。
+- 使用 Electron 内置 Chromium DOM 操作 `pd.qq.com`。
 - 扫码登录一次后尽量长期复用登录状态。
 - 使用 SQLite 保存实例、频道、任务、发布状态、选择器配置和日志。
 - 腾讯频道页面 DOM 改动时，优先通过修改选择器配置适配，而不是重新修改并打包整个程序。
@@ -29,15 +29,15 @@
 - 本地文件选择。
 - 后续 Windows EXE 打包。
 
-### Playwright
+### Electron 内置 Chromium
 
 用途：腾讯频道网页自动化。
 
 负责：
 
-- 启动 Chromium。
-- `launchPersistentContext` 持久化登录态。
-- 所有实例共用一个持久 Chromium Session；实例只负责分组频道和任务。
+- 使用 `WebContentsView` 嵌入 Chromium，不依赖客户电脑安装 Chrome。
+- 每个实例使用独立的 `persist:qq-channel-instance-<id>` partition。
+- 每个实例单独持久化并加密备份登录态。
 - 打开腾讯频道。
 - 定位发帖区域。
 - 上传图片/视频。
@@ -91,10 +91,10 @@ Electron Main Process
         ├──────────► SQLite
         │
         ▼
-Playwright
+Electron WebContentsView
         │
         ▼
-Persistent Chromium
+每实例独立 Persistent Session
         │
         ▼
 https://pd.qq.com/
@@ -104,7 +104,7 @@ https://pd.qq.com/
 
 ## 4. 实例与登录态设计
 
-一个实例代表一组频道及其发布任务，与 QQ 账号无关。一个实例可以分配多个频道，所有实例共用同一个 QQ 登录状态。
+一个实例代表一个独立登录的 QQ 账号。一个实例可以分配多个频道；实例之间的 Cookie、Web Storage、浏览器视图和发布 worker 相互隔离。
 
 建议目录结构：
 
@@ -112,19 +112,22 @@ https://pd.qq.com/
 Electron userData/
 ├─ publisher.db
 ├─ profiles/
-│  └─ 1/       # 全局登录备份，沿用历史目录以兼容已有登录
+│  ├─ 1/       # 实例 1 的加密登录备份
+│  └─ 2/       # 实例 2 的加密登录备份
 ├─ logs/
 └─ screenshots/
 ```
 
-Playwright 使用：
+Electron Session 使用：
 
 ```js
-chromium.launchPersistentContext(profilePath, options)
+session.fromPartition(`persist:qq-channel-instance-${instanceId}`)
 ```
 
-不同实例之间仅隔离本地业务数据：
+不同实例之间隔离：
 
+- Cookie 与 Web Storage
+- Chromium 页面和登录状态
 - 频道配置
 - 发布任务
 - 任务目标及执行状态
@@ -212,9 +215,9 @@ failed
 
 ---
 
-## 7. 后续桌面打包
+## 7. 桌面打包
 
-计划采用 Electron Builder 或 Electron Forge 打包 Windows 版本。
+当前使用 Electron Builder 打包 Windows 版本。
 
 目标输出：
 
@@ -224,7 +227,7 @@ qqChannel.exe
 
 打包阶段还需要处理：
 
-- Playwright Chromium 浏览器资源。
+- Electron 内置 Chromium 运行时。
 - better-sqlite3 原生模块重编译。
 - userData 数据目录。
 - 自动更新（后期）。

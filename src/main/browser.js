@@ -3,10 +3,6 @@ const fs = require('fs');
 const { WebContentsView, session, safeStorage } = require('electron');
 
 const QQ_HOME = 'https://pd.qq.com/';
-// 历史版本把默认实例（#1）的登录态保存在这个 partition/profile 中。
-// 现在实例只负责分组频道，所有实例共用这套 QQ 登录态，同时保留已有登录。
-const SHARED_QQ_PARTITION = 'persist:qq-channel-instance-1';
-const SHARED_QQ_PROFILE = '1';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 class NonRetryableError extends Error {
@@ -45,18 +41,26 @@ class BrowserManager {
     return Math.max(0, Math.floor(seconds)) * 1000;
   }
 
-  profilePath() {
-    const p = path.join(this.userDataPath, 'profiles', SHARED_QQ_PROFILE);
+  normalizeInstanceId(instanceId) {
+    const id = Number(instanceId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error('请选择有效的账号实例');
+    return id;
+  }
+
+  profilePath(instanceId) {
+    const id = this.normalizeInstanceId(instanceId);
+    const p = path.join(this.userDataPath, 'profiles', String(id));
     fs.mkdirSync(p, { recursive: true });
     return p;
   }
 
-  authStatePath() {
-    return path.join(this.profilePath(), 'auth-state.bin');
+  authStatePath(instanceId) {
+    return path.join(this.profilePath(instanceId), 'auth-state.bin');
   }
 
-  partitionName() {
-    return SHARED_QQ_PARTITION;
+  partitionName(instanceId) {
+    const id = this.normalizeInstanceId(instanceId);
+    return `persist:qq-channel-instance-${id}`;
   }
 
   isAllowedQQUrl(url) {
@@ -70,10 +74,10 @@ class BrowserManager {
   }
 
   async getOrCreateView(instanceId) {
-    const id = Number(instanceId);
+    const id = this.normalizeInstanceId(instanceId);
     if (this.views.has(id)) return this.views.get(id);
 
-    const persistentSession = session.fromPartition(this.partitionName());
+    const persistentSession = session.fromPartition(this.partitionName(id));
     const view = new WebContentsView({
       webPreferences: {
         session: persistentSession,
@@ -126,18 +130,26 @@ class BrowserManager {
   }
 
   async destroyInstance(instanceId) {
-    const id = Number(instanceId);
+    const id = this.normalizeInstanceId(instanceId);
     const record = this.views.get(id);
-    if (!record) return { destroyed: false };
-
-    record.view.setVisible(false);
-    try { this.mainWindow.contentView.removeChildView(record.view); } catch (_) {}
-    if (!record.view.webContents.isDestroyed()) {
-      record.view.webContents.close({ waitForBeforeUnload: false });
+    const persistentSession = record?.session || session.fromPartition(this.partitionName(id));
+    await persistentSession.clearStorageData().catch(() => {});
+    await persistentSession.clearCache().catch(() => {});
+    if (record) {
+      record.view.setVisible(false);
+      try { this.mainWindow.contentView.removeChildView(record.view); } catch (_) {}
+      if (!record.view.webContents.isDestroyed()) {
+        record.view.webContents.close({ waitForBeforeUnload: false });
+      }
+      this.views.delete(id);
     }
-    this.views.delete(id);
     if (this.activeInstanceId === id) this.activeInstanceId = null;
-    return { destroyed: true };
+    const profile = path.resolve(this.profilePath(id));
+    const profilesRoot = path.resolve(this.userDataPath, 'profiles');
+    if (path.dirname(profile) === profilesRoot && path.basename(profile) === String(id)) {
+      fs.rmSync(profile, { recursive: true, force: true });
+    }
+    return { destroyed: Boolean(record), profileCleared: true };
   }
 
   normalizeBounds(bounds) {
@@ -196,7 +208,7 @@ class BrowserManager {
   async restoreAuthState(instanceId, record) {
     if (record.restored) return false;
     record.restored = true;
-    const statePath = this.authStatePath();
+    const statePath = this.authStatePath(instanceId);
     if (!fs.existsSync(statePath) || !safeStorage.isEncryptionAvailable()) return false;
 
     const encrypted = fs.readFileSync(statePath);
@@ -269,7 +281,7 @@ class BrowserManager {
     }
 
     const payload = JSON.stringify({ version: 2, cookies, webStorage });
-    fs.writeFileSync(this.authStatePath(), safeStorage.encryptString(payload));
+    fs.writeFileSync(this.authStatePath(instanceId), safeStorage.encryptString(payload));
     return true;
   }
 
@@ -374,25 +386,141 @@ class BrowserManager {
     return this.getLoginStatus(instanceId, record, { wait: false });
   }
 
+  async beginPublishingLogin(instanceId) {
+    const status = await this.openLogin(instanceId);
+    return {
+      ...status,
+      requiresBrowser: !status.loggedIn,
+      message: status.loggedIn
+        ? '当前实例已经登录'
+        : '请在内置浏览器中完成 QQ 登录，然后点击“检测登录”'
+    };
+  }
+
+  async getPublishingLoginStatus(instanceId) {
+    return this.getLoginStatus(instanceId, null, { wait: false });
+  }
+
+  async pollPublishingLogin(instanceId) {
+    return this.getLoginStatus(instanceId, null, { wait: false });
+  }
+
+  async logoutPublishing(instanceId) {
+    const id = this.normalizeInstanceId(instanceId);
+    const record = await this.getOrCreateView(id);
+    record.webStorage = null;
+    record.storageApplied = false;
+    await record.session.clearStorageData();
+    await record.session.clearCache().catch(() => {});
+    const statePath = this.authStatePath(id);
+    if (fs.existsSync(statePath)) fs.rmSync(statePath, { force: true });
+    this.db.setInstanceLoginState?.(id, false, '');
+    await record.view.webContents.loadURL(QQ_HOME);
+    return { loggedOut: true, instanceId: id };
+  }
+
   async getLoginStatus(instanceId, existingRecord = null, options = {}) {
     const record = existingRecord || await this.getOrCreateView(instanceId);
     const currentUrl = record.view.webContents.getURL();
     if (!currentUrl || !currentUrl.startsWith('https://pd.qq.com/')) await this.navigate(instanceId, QQ_HOME);
 
     const selectors = this.db.getSelectorMap();
-    const timeout = options.wait === false ? 1000 : 10000;
+    const timeout = options.wait === false ? 8000 : 12000;
     try {
       // 登录检测可能发生在“发布任务”页，此时 WebContentsView 会被隐藏，
       // 已登录用户节点仍存在但 getBoundingClientRect() 为 0。这里只判断节点存在，
       // 否则会把真实登录会话误报为未登录，并在任务开始前直接拦截。
-      const found = await this.waitForElement(record.view.webContents, selectors.logged_in_user, { visible: false, timeout });
+      const deadline = Date.now() + timeout;
+      let found = null;
+      while (Date.now() < deadline) {
+        found = await this.elementAction(record.view.webContents, selectors.logged_in_user, 'inspect').catch(() => null);
+        if (found?.found) break;
+
+        const authState = await record.view.webContents.executeJavaScript(`(() => {
+          const text = el => String(el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
+          const user = document.querySelector([
+            '.app-login .user-info .name',
+            '.app-login .user-card .name',
+            '.app-login .user-info',
+            '.app-login .user-card',
+            '.app-login [class*="avatar"]',
+            'header .user-info',
+            'header [class*="user-card"]'
+          ].join(','));
+          const controls = [...document.querySelectorAll('button,a')];
+          const loginButton = controls.find(el => /^(登录|扫码登录|QQ登录)$/.test(text(el)));
+          const authenticatedNav = [...document.querySelectorAll('a,button,span,div')].find(el =>
+            /^(管理中心|我的频道)$/.test(text(el))
+          );
+          if (user || authenticatedNav) return { state: 'logged_in', text: text(user) };
+          if (loginButton) return { state: 'logged_out', text: '' };
+          if (document.readyState === 'complete' && text(document.body).length > 100) return { state: 'logged_out', text: '' };
+          return { state: 'pending', text: '' };
+        })()`, true).catch(() => ({ state: 'pending', text: '' }));
+
+        if (authState.state === 'logged_in') {
+          found = { found: true, text: authState.text, visible: true, count: 1 };
+          break;
+        }
+        if (authState.state === 'logged_out') break;
+        await sleep(250);
+      }
+      if (!found?.found) throw new Error('not logged in');
       await this.saveAuthState(instanceId, record).catch(error => {
         this.db.log('warn', `QQ 登录会话保存失败：${String(error?.message || error)}`);
       });
-      return { loggedIn: true, name: found.text || '已登录', url: record.view.webContents.getURL() };
+      const name = found.text || 'QQ账号';
+      this.db.setInstanceLoginState?.(instanceId, true, name);
+      return { loggedIn: true, name, url: record.view.webContents.getURL(), instanceId: Number(instanceId) };
     } catch (_) {
-      return { loggedIn: false, name: '', url: record.view.webContents.getURL() };
+      this.db.setInstanceLoginState?.(instanceId, false, '');
+      return { loggedIn: false, name: '', url: record.view.webContents.getURL(), instanceId: Number(instanceId) };
     }
+  }
+
+  async collectChannels(instanceId) {
+    const id = this.normalizeInstanceId(instanceId);
+    const record = await this.getOrCreateView(id);
+    if (!record.view.webContents.getURL().startsWith(QQ_HOME)) await this.navigate(id, QQ_HOME);
+    const login = await this.getLoginStatus(id, record, { wait: true });
+    if (!login.loggedIn) throw new Error('当前实例未登录，请先在内置浏览器完成 QQ 登录');
+
+    const deadline = Date.now() + 15000;
+    let rows = [];
+    while (Date.now() < deadline) {
+      rows = await record.view.webContents.executeJavaScript(`(() => {
+        const result = [];
+        const seen = new Set();
+        for (const anchor of document.querySelectorAll('a[href*="/g/"]')) {
+          let url;
+          try {
+            const parsed = new URL(anchor.getAttribute('href') || '', location.href);
+            const match = parsed.pathname.match(/^\\/g\\/([^/?#]+)/i);
+            if (!match) continue;
+            url = 'https://pd.qq.com/g/' + match[1];
+          } catch (_) { continue; }
+          if (seen.has(url)) continue;
+          const raw = String(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || anchor.innerText || anchor.textContent || '')
+            .replace(/\\s+/g, ' ').trim();
+          const imageAlt = String(anchor.querySelector('img')?.alt || '').trim();
+          const name = (raw || imageAlt).replace(/^(进入|打开)/, '').trim();
+          if (!name || /^(首页|频道|发现|管理中心)$/.test(name)) continue;
+          seen.add(url);
+          result.push({ name: name.slice(0, 100), url, guildNumber: url.split('/').pop() });
+        }
+        return result;
+      })()`, true).catch(() => []);
+      if (rows.length) break;
+      await sleep(500);
+    }
+
+    return rows.map(item => ({
+      ...item,
+      guildId: item.guildNumber,
+      source: 'browser',
+      sourceLabel: '当前实例',
+      selectable: true
+    }));
   }
 
   async testSelector(instanceId, selector, url) {
@@ -548,6 +676,36 @@ class BrowserManager {
     throw new Error('点击发表后未检测到明确的发布成功状态');
   }
 
+  async snapshotPostUrls(webContents) {
+    return webContents.executeJavaScript(`(() => {
+      const urls = [];
+      for (const anchor of document.querySelectorAll('a[href]')) {
+        try {
+          const url = new URL(anchor.getAttribute('href'), location.href);
+          if (url.hostname !== 'pd.qq.com') continue;
+          if (!(/\\/qqweb\\/qunpro\\/share/i.test(url.pathname) || /\\/(?:s|feed)\\//i.test(url.pathname))) continue;
+          urls.push(url.href);
+        } catch (_) {}
+      }
+      return [...new Set(urls)];
+    })()`, true).catch(() => []);
+  }
+
+  async waitForNewPostUrl(webContents, previousUrls = []) {
+    const previous = new Set(previousUrls || []);
+    const current = String(webContents.getURL() || '');
+    if (/pd\.qq\.com\/(?:qqweb\/qunpro\/share|s\/|feed\/)/i.test(current)) return current;
+
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const urls = await this.snapshotPostUrls(webContents);
+      const fresh = urls.find(url => !previous.has(url));
+      if (fresh) return fresh;
+      await sleep(500);
+    }
+    return '';
+  }
+
   screenshotDir() {
     const d = new Date();
     const date = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
@@ -582,6 +740,7 @@ class BrowserManager {
 
       const login = await this.getLoginStatus(task.instance_id, record);
       if (!login.loggedIn) throw new Error('QQ 登录状态已失效，请重新登录后继续');
+      const previousPostUrls = await this.snapshotPostUrls(webContents);
 
       await this.ensureComposerOpen(webContents, selectors);
       await this.clearComposerMedia(webContents);
@@ -604,6 +763,7 @@ class BrowserManager {
       this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 已点击发表，等待结果确认`);
 
       const verify = await this.verifyPublishSuccess(webContents, selectors);
+      const postUrl = await this.waitForNewPostUrl(webContents, previousPostUrls);
       this.db.setTargetStatus(target.id, 'success');
       this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 发布成功（${verify.reason}）`);
       this.notifyPublishUpdate({
@@ -613,7 +773,7 @@ class BrowserManager {
         channelName: target.channel_name,
         status: 'success'
       });
-      return true;
+      return { success: true, postUrl, reason: verify.reason };
     } catch (error) {
       const msg = String(error?.message || error);
       const screenshot = await this.saveFailureScreenshot(webContents, task.id, target.id, attempt);

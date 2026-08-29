@@ -56,8 +56,9 @@
 - 重命名实例。
 - 删除实例，并级联清理该实例的频道、任务和任务目标。
 - 不同实例的频道与任务数据隔离。
-- 所有实例共用一个 QQ 登录状态。
+- 每个实例拥有独立的 Electron Chromium persistent partition 和 QQ 登录状态。
 - 每实例独立发布队列 worker。
+- 支持一键启动 / 停止全部实例，各实例可并行运行。
 
 待完善：
 
@@ -71,9 +72,9 @@
 
 已实现：
 
-- Playwright Chromium。
-- `launchPersistentContext`。
-- 全局共用持久登录 Session 和加密登录备份。
+- Electron 内置 Chromium `WebContentsView`。
+- 每实例独立 persistent partition。
+- 每实例独立加密登录备份。
 - 打开 `https://pd.qq.com/`。
 - Cookie / LocalStorage / IndexedDB 等浏览器 Profile 持久化。
 - 根据真实页面 `.app-login .user-info .name` / `.app-login .user-card .name` 检测已登录账号。
@@ -138,12 +139,8 @@
 - 图文混合任务。
 - 每帖 N 张图片。
 - 随机图片组合。
-- CSV / Excel 导入。
-- 编辑任务。
 - 删除任务。
 - 批量删除。
-- 清理已完成任务。
-- 任务复制。
 
 ---
 
@@ -232,7 +229,7 @@
 
 待完善：
 
-- 进程级强制取消当前 Playwright 步骤。
+- 进程级强制取消当前 DOM 发布步骤。
 - 多实例队列总览。
 - 更完整的崩溃恢复状态机。
 - 独立的任务优先级。
@@ -403,26 +400,11 @@ templates
 - 当前任务图片不重复。
 - 支持 1～多图。
 
-### 3. CSV / Excel 导入
+### 3. 任务管理
 
-计划字段：
-
-```text
-标题
-正文
-素材路径
-类型
-频道
-计划时间
-```
-
-### 4. 任务管理完善
-
-- 编辑。
-- 删除。
-- 批量删除。
-- 清理已完成。
-- 复制任务。
+- 分页。
+- 全选当前页并跨页保留选择。
+- 批量删除成功、失败或待发布任务；运行中任务自动跳过。
 
 ---
 
@@ -458,7 +440,7 @@ templates
 
 ```text
 v0.1
-基础 Electron + Playwright + SQLite 
+基础 Electron + WebContentsView + SQLite
         ↓
 v0.2
 真实 DOM + ProseMirror + 登录检测 + 上传等待 + 成功判断 + 自动重试 + 错误截图
@@ -470,7 +452,7 @@ v0.4
 批量视频目录 + 图片任务 + 多图
         ↓
 v0.5
-CSV/Excel + 模板 + 素材去重 + 频道轮换
+多账号实例总览 + 素材去重 + 频道轮换
         ↓
 v0.6
 自动采集频道 + 定时发布 + 统计
@@ -490,5 +472,4 @@ Windows 稳定版
 3. 增加网络请求监听，拿到真实发布结果 / 帖子 ID。
 4. 开发批量视频目录读取。
 5. 开发图片 / 多图任务。
-6. 增加任务编辑 / 删除 / 清理已完成。
-7. 开发 CSV / Excel 导入。
+6. 完成双 QQ、双实例并行发布验收。

@@ -307,7 +307,7 @@ $('#instanceSelect').addEventListener('change', async (e) => {
 $('#btnNewInstance').addEventListener('click', async () => {
   $('#instanceForm').dataset.mode = 'create';
   $('#instanceDialogTitle').textContent = '新建实例';
-  $('#instanceDialogDescription').textContent = '实例用于分组管理频道；QQ 登录状态由所有实例共用。';
+  $('#instanceDialogDescription').textContent = '每个实例对应一个独立登录的 QQ 账号，并可管理多个频道。';
   $('#instanceName').value = `实例 ${Date.now().toString().slice(-4)}`;
   $('#btnSaveInstance').textContent = '创建实例';
   $('#btnDeleteInstance').classList.add('hidden');
@@ -365,7 +365,7 @@ $('#btnDeleteInstance').addEventListener('click', async () => {
     return alert(String(error?.message || error));
   }
   if (Number(summary.running_task_count) > 0) return alert('该实例仍有正在发布的任务，请等待任务完成后再删除');
-  const ok = confirm(`确定删除实例“${instance.name}”？\n\n将同时删除：\n- ${summary.channel_count || 0} 个本地频道配置\n- ${summary.task_count || 0} 条本地任务记录\n\n不会删除腾讯频道中的实际内容，也不会退出共享的 QQ 登录。此操作不可撤销。`);
+  const ok = confirm(`确定删除实例“${instance.name}”？\n\n将同时删除：\n- ${summary.channel_count || 0} 个本地频道配置\n- ${summary.task_count || 0} 条本地任务记录\n- 该实例的本地 QQ 登录会话\n\n不会删除腾讯频道中的实际内容。此操作不可撤销。`);
   if (!ok) return;
   const button = $('#btnDeleteInstance');
   button.disabled = true;
@@ -385,51 +385,40 @@ $('#btnDeleteInstance').addEventListener('click', async () => {
 $('#btnLogin').addEventListener('click', async () => {
   if (!currentInstanceId) return;
   const status = $('#loginStatus');
-  status.textContent = '登录状态：正在准备二维码...';
+  status.textContent = '登录状态：正在打开内置浏览器...';
   status.style.background = '#fff7e6';
   status.style.color = '#c47b00';
   try {
     const result = await window.api.openLogin(currentInstanceId);
-    if (result?.alreadyLoggedIn || result?.loggedIn) {
+    await activateTab('browser');
+    await syncBrowserView();
+    if (result?.loggedIn) {
       await checkLoginStatus(false);
-      alert('QQ 频道发布授权已经登录，无需重复扫码。');
+      alert('当前实例已经登录。');
       return;
     }
-    const qr = $('#publisherLoginQr');
-    qr.src = result?.qrDataUrl || '';
-    qr.classList.toggle('hidden', !result?.qrDataUrl);
-    const link = $('#publisherLoginLink');
-    link.href = result?.verificationUri || '#';
-    link.classList.toggle('hidden', !result?.verificationUri);
-    $('#publisherLoginMessage').textContent = result?.qrDataUrl
-      ? '请使用手机 QQ 扫码，完成后点击“我已完成扫码”。'
-      : '二维码未能显示，请打开授权链接完成登录。';
-    $('#publisherLoginDialog').showModal();
-    status.textContent = '登录状态：等待扫码授权';
+    status.textContent = '登录状态：请在内置浏览器完成登录';
+    alert('请在当前实例的内置浏览器中完成 QQ 登录。登录后点击顶部“检测登录”。');
   } catch (error) {
-    status.textContent = '登录状态：二维码获取失败';
+    status.textContent = '登录状态：打开失败';
     alert(String(error?.message || error));
   }
 });
 
-$('#btnPollPublisherLogin').addEventListener('click', async () => {
-  const button = $('#btnPollPublisherLogin');
-  button.disabled = true;
-  $('#publisherLoginMessage').textContent = '正在确认授权...';
+$('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
+$('#btnLogoutQQ').addEventListener('click', async () => {
+  if (!currentInstanceId) return;
+  const instance = instanceRows.find(item => Number(item.id) === Number(currentInstanceId));
+  if (!confirm(`确定退出实例“${instance?.name || currentInstanceId}”的 QQ 登录？\n\n只会清除这个实例的登录会话，不影响其他实例。`)) return;
   try {
-    const result = await window.api.pollPublisherLogin();
-    if (!result?.loggedIn) throw new Error(result?.message || '尚未完成扫码授权');
-    $('#publisherLoginDialog').close();
+    await window.api.logoutQQ(currentInstanceId);
     await checkLoginStatus(false);
-    alert('QQ 频道发布授权登录成功。');
+    if (activeTab === 'browser') await window.api.browserHome(currentInstanceId);
+    alert('当前实例已退出 QQ。');
   } catch (error) {
-    $('#publisherLoginMessage').textContent = `授权未完成：${String(error?.message || error)}`;
-  } finally {
-    button.disabled = false;
+    alert(String(error?.message || error));
   }
 });
-
-$('#btnCheckLogin').addEventListener('click', () => checkLoginStatus(true));
 $('#btnBrowserHome').addEventListener('click', async () => { await window.api.browserHome(currentInstanceId); await syncBrowserView(); });
 $('#btnBrowserBack').addEventListener('click', async () => { await window.api.browserBack(currentInstanceId); });
 $('#btnBrowserReload').addEventListener('click', async () => { await window.api.browserReload(currentInstanceId); });
@@ -613,6 +602,19 @@ $('#btnQueueStart').addEventListener('click', async () => {
 $('#btnQueuePause').addEventListener('click', async () => { await window.api.schedulerPause(currentInstanceId); await refreshSchedulerState(); });
 $('#btnQueueResume').addEventListener('click', async () => { await window.api.schedulerResume(currentInstanceId); await refreshSchedulerState(); });
 $('#btnQueueStop').addEventListener('click', async () => { await window.api.schedulerStop(currentInstanceId); await refreshSchedulerState(); });
+$('#btnQueueStartAll').addEventListener('click', async () => {
+  try {
+    const result = await window.api.schedulerStartAll();
+    alert(result.count ? `已启动 ${result.count} 个有待发布任务的实例。` : '所有实例都没有待发布任务。');
+  } catch (error) {
+    alert(String(error?.message || error));
+  }
+  await refreshSchedulerState();
+});
+$('#btnQueueStopAll').addEventListener('click', async () => {
+  await window.api.schedulerStopAll();
+  await refreshSchedulerState();
+});
 
 $('#btnRunTask').addEventListener('click', async () => {
   if (selectedTaskIds.size !== 1) return alert('执行任务时请只选择一条任务');

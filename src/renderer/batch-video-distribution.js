@@ -73,7 +73,7 @@
           id: Number(channel.id),
           name: String(channel.name || `频道 #${channel.id}`),
           instanceId: Number(group.instance.id),
-          instanceName: String(group.instance.name || `频道分组 #${group.instance.id}`)
+          instanceName: String(group.instance.name || `实例 #${group.instance.id}`)
         });
       }
     }
@@ -100,7 +100,7 @@
       summary.className = 'target-summary';
       head.insertBefore(summary, qs('#btnBatchSelectAll'));
     }
-    if (summary) summary.textContent = `已选 ${groupCount} 个频道分组 · ${channels.length} 个频道`;
+    if (summary) summary.textContent = `已选 ${groupCount} 个实例 · ${channels.length} 个频道`;
   }
 
   function toggleInstance(instanceId) {
@@ -117,7 +117,7 @@
     const host = qs('#batchChannelList');
     if (!host) return;
     if (!batchTargetGroups.length) {
-      host.innerHTML = '<div class="hint">暂无频道分组，请先新建频道分组并添加频道。</div>';
+      host.innerHTML = '<div class="hint">暂无实例，请先新建实例并添加频道。</div>';
       updateSummary();
       return;
     }
@@ -128,7 +128,7 @@
       const expanded = expandedBatchInstances.has(instanceId);
       const preview = group.channels.length
         ? group.channels.slice(0, 4).map(channel => escapeHtmlLocal(channel.name)).join('、') + (group.channels.length > 4 ? ` 等 ${group.channels.length} 个频道` : '')
-        : '该频道分组暂未绑定频道';
+        : '该实例暂未绑定频道';
       const channelsHtml = group.channels.map(channel => `
         <label class="batch-channel-row">
           <input type="checkbox" class="batch-channel-checkbox" data-instance-id="${instanceId}" value="${Number(channel.id)}">
@@ -187,7 +187,7 @@
     const subtitle = dialog.querySelector('.modal-head p');
     if (subtitle) subtitle.textContent = '每个频道只发布一次；视频少时循环平均分配，视频多时多余视频不发布。';
     const title = dialog.querySelector('.target-head strong');
-    if (title) title.textContent = '选择目标频道分组 / 频道（可多选）';
+    if (title) title.textContent = '选择目标实例 / 频道（可多选）';
   }
 
   async function openDialog(event) {
@@ -207,7 +207,7 @@
     }
 
     const host = qs('#batchChannelList');
-    if (host) host.innerHTML = '<div class="hint">正在加载频道分组和频道...</div>';
+    if (host) host.innerHTML = '<div class="hint">正在加载实例和频道...</div>';
     qs('#batchVideoDialog')?.showModal();
     try {
       expandedBatchInstances.clear();
@@ -238,7 +238,7 @@
         ? `${videos.length} 个视频与 ${channels.length} 个频道一一对应。`
         : `只使用前 ${channels.length} 个视频，剩余 ${unusedCount} 个视频不发布。`;
     const preview = assignmentPreview(assignments, unusedCount);
-    if (!confirm(`已选择 ${groupCount} 个频道分组中的 ${channels.length} 个频道。\n\n本次将创建 ${channels.length} 条任务，每个频道只发布 1 次。\n\n${distributionText}\n\n分配预览：\n${preview}\n\n是否继续？`)) return;
+    if (!confirm(`已选择 ${groupCount} 个实例中的 ${channels.length} 个频道。\n\n本次将创建 ${channels.length} 条任务，每个频道只发布 1 次。\n\n${distributionText}\n\n分配预览：\n${preview}\n\n是否继续？`)) return;
 
     button.disabled = true;
     button.textContent = '创建中...';
@@ -272,7 +272,7 @@
       }
       await refreshSchedulerState();
       const extra = unusedCount > 0 ? `；${unusedCount} 个多余视频未创建任务` : '';
-      alert(`已创建 ${assignments.length} 条任务，覆盖 ${groupCount} 个频道分组，每个频道 1 条${extra}`);
+      alert(`已创建 ${assignments.length} 条任务，覆盖 ${groupCount} 个实例，每个频道 1 条${extra}`);
     } catch (error) {
       alert(`批量创建失败：${String(error?.message || error)}`);
     } finally {

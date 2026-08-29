@@ -1,17 +1,7 @@
 const DB = require('./db');
 const BrowserManager = require('./browser');
 
-// 单账号模式：直接使用 tencent-channel-cli 在当前 Windows 用户下的登录态。
-// 本地数据按 QQ account_id 隔离；多账号分支后续只需要增加凭据切换能力。
-require('./single-account-support')(DB, BrowserManager);
-require('./task-list-filter-support')(DB);
+// 多账号 DOM 模式：instances 表中的每条记录都对应一个独立的 Chromium
+// persistent partition。不要加载单账号/CLI 覆盖层，否则多个实例会再次共享登录态。
 require('./comment-support')(DB, BrowserManager);
-require('./cli-publishing-support')(DB, BrowserManager);
-require('./account-workspace-support')(DB, BrowserManager);
-require('./account-comment-compat-support')(DB);
-require('./account-admin-fingerprint-support')(DB, BrowserManager);
-require('./account-admin-fingerprint-safety-support')(DB, BrowserManager);
-require('./login-diagnostic-support')(DB, BrowserManager);
-require('./login-request-dedupe-support')(DB, BrowserManager);
-require('./channel-sync-support');
 require('./main');
