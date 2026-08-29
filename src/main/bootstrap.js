@@ -8,6 +8,7 @@ require('./task-list-filter-support')(DB);
 require('./comment-support')(DB, BrowserManager);
 require('./cli-publishing-support')(DB, BrowserManager);
 require('./account-workspace-support')(DB, BrowserManager);
+require('./account-comment-compat-support')(DB);
 require('./account-admin-fingerprint-support')(DB, BrowserManager);
 require('./account-admin-fingerprint-safety-support')(DB, BrowserManager);
 require('./login-diagnostic-support')(DB, BrowserManager);
