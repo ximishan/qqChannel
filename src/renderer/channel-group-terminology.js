@@ -49,6 +49,23 @@
     document.querySelector('#testResult')?.closest('.card')?.classList.add('hidden');
   }
 
+  function loadDialogEnhancements() {
+    if (!document.querySelector('link[data-dialog-theme]')) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'dialogs.css';
+      link.dataset.dialogTheme = '1';
+      document.head.appendChild(link);
+    }
+
+    if (!document.querySelector('script[data-ui-dialogs]')) {
+      const script = document.createElement('script');
+      script.src = 'ui-dialogs.js';
+      script.dataset.uiDialogs = '1';
+      document.body.appendChild(script);
+    }
+  }
+
   async function fillCurrentGroupName() {
     const form = document.querySelector('#instanceForm');
     const input = document.querySelector('#instanceName');
@@ -81,6 +98,7 @@
   normalizeAll();
   removeEmbeddedBrowserTab();
   hideAdvancedSelectorSettings();
+  loadDialogEnhancements();
 
   const observer = new MutationObserver((mutations) => {
     let controlsNeedNormalize = false;
