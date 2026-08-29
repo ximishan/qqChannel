@@ -44,6 +44,11 @@
     document.querySelector('#browser')?.remove();
   }
 
+  function hideAdvancedSelectorSettings() {
+    document.querySelector('#selectorList')?.closest('.card')?.classList.add('hidden');
+    document.querySelector('#testResult')?.closest('.card')?.classList.add('hidden');
+  }
+
   async function fillCurrentGroupName() {
     const form = document.querySelector('#instanceForm');
     const input = document.querySelector('#instanceName');
@@ -75,6 +80,7 @@
 
   normalizeAll();
   removeEmbeddedBrowserTab();
+  hideAdvancedSelectorSettings();
 
   const observer = new MutationObserver((mutations) => {
     let controlsNeedNormalize = false;
