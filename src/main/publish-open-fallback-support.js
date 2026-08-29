@@ -87,7 +87,10 @@ module.exports = function installPublishOpenFallbackSupport(DB, BrowserManager) 
         ? `container=${lastState.container ? '有' : '无'}, header=${lastState.headerVisible ? '可见' : (lastState.header ? '不可见' : '无')}, headerText=${lastState.headerText || '空'}, area=${lastState.areaHeight || 0}px/${lastState.areaClass || '无class'}, ProseMirror=${lastState.body ? (lastState.bodyVisible ? '可见' : '不可见') : '无'}, 上传input=${lastState.fileInput ? '有' : '无'}, 发表按钮=${lastState.publishButton ? (lastState.publishButtonDisabled ? '禁用' : '可用') : '无'}, fallbackClicks=${clickCount}`
         : '未读取到发布组件 DOM';
 
-      throw new NonRetryableError(`发帖正文编辑器仍未展开（${stateText}）`);
+      const fallbackError = new Error(`发帖正文编辑器仍未展开（${stateText}）`);
+      fallbackError.name = 'NonRetryableError';
+      fallbackError.retryable = false;
+      throw fallbackError;
     }
   };
 };
