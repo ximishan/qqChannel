@@ -5,4 +5,5 @@ const BrowserManager = require('./browser');
 // persistent partition。不要加载单账号/CLI 覆盖层，否则多个实例会再次共享登录态。
 require('./comment-support')(DB, BrowserManager);
 require('./comment-dom-fix-support')(DB, BrowserManager);
+require('./publish-open-fallback-support')(DB, BrowserManager);
 require('./main');
