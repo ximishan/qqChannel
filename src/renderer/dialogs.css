@@ -113,17 +113,21 @@ dialog:not(.app-message-dialog) .modal-actions .primary {
 
 /* 应用提示/确认弹窗 */
 .app-message-dialog {
-  width: min(440px, calc(100vw - 36px));
+  width: min(560px, calc(100vw - 36px));
+  max-height: calc(100vh - 48px);
   border: 0;
   border-radius: 18px;
   padding: 0;
   background: transparent;
-  overflow: visible;
+  overflow: hidden;
   box-shadow: none;
 }
 
 .app-message-dialog .app-message-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, .18);
   border-radius: 18px;
@@ -136,6 +140,9 @@ dialog:not(.app-message-dialog) .modal-actions .primary {
   grid-template-columns: 48px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
   padding: 26px 28px 22px;
 }
 
@@ -172,11 +179,16 @@ dialog:not(.app-message-dialog) .modal-actions .primary {
 }
 
 .app-message-copy {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   padding-top: 2px;
 }
 
 .app-message-title {
+  flex: 0 0 auto;
   margin: 0 36px 8px 0;
   color: #182235;
   font-size: 18px;
@@ -184,11 +196,18 @@ dialog:not(.app-message-dialog) .modal-actions .primary {
 }
 
 .app-message-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: min(54vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 10px;
   color: #5d6b7d;
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  scrollbar-width: thin;
 }
 
 .app-message-close {
@@ -214,12 +233,16 @@ dialog:not(.app-message-dialog) .modal-actions .primary {
 }
 
 .app-message-actions {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
   padding: 15px 24px 17px;
   border-top: 1px solid #edf2f7;
   background: #fbfcfe;
+  box-shadow: 0 -8px 20px rgba(15, 23, 42, .035);
 }
 
 .app-message-actions button {
@@ -255,6 +278,9 @@ dialog:not(.app-message-dialog) .modal-actions .primary {
     width: 42px;
     height: 42px;
     font-size: 20px;
+  }
+  .app-message-text {
+    max-height: 50vh;
   }
   .app-message-actions {
     padding: 14px 18px 16px;
