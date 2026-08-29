@@ -389,8 +389,10 @@ $('#btnLogin').addEventListener('click', async () => {
   status.style.background = '#fff7e6';
   status.style.color = '#c47b00';
   try {
-    const result = await window.api.openLogin(currentInstanceId);
+    // 先切换标签页，再让主进程加载登录页；即使加载失败，WebContentsView
+    // 也不会覆盖在任务列表上。
     await activateTab('browser');
+    const result = await window.api.openLogin(currentInstanceId);
     await syncBrowserView();
     if (result?.loggedIn) {
       await checkLoginStatus(false);

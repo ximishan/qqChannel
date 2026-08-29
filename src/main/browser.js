@@ -186,9 +186,29 @@ class BrowserManager {
   async navigate(instanceId, url = QQ_HOME) {
     if (!this.isAllowedQQUrl(url)) throw new Error('内置浏览器只允许打开腾讯 QQ 域名');
     const record = await this.getOrCreateView(instanceId);
-    await record.view.webContents.loadURL(url);
+    const targetUrl = new URL(url).href;
+    const webContents = record.view.webContents;
+    const currentUrl = webContents.getURL();
+
+    // 登录检测、浏览器首页按钮和登录按钮可能在页面尚未完成加载时同时请求
+    // QQ 首页。Chromium 会用 ERR_ABORTED(-3) 取消前一次相同导航，这不是网络
+    // 失败。相同 URL 已经加载或正在加载时直接复用，避免弹出误报错误。
+    if (currentUrl !== targetUrl) {
+      try {
+        await webContents.loadURL(targetUrl);
+      } catch (error) {
+        const aborted = Number(error?.errno ?? error?.code) === -3
+          || /ERR_ABORTED|\(-3\)|Error:\s*-3/i.test(String(error?.message || error));
+        if (!aborted || !this.isAllowedQQUrl(webContents.getURL())) throw error;
+      }
+    } else if (webContents.isLoading()) {
+      await Promise.race([
+        new Promise(resolve => webContents.once('did-stop-loading', resolve)),
+        sleep(15000)
+      ]);
+    }
     await this.applyWebStorage(record);
-    return { url: record.view.webContents.getURL() };
+    return { url: webContents.getURL() };
   }
 
   async goBack(instanceId) {
@@ -380,8 +400,6 @@ class BrowserManager {
   async openLogin(instanceId) {
     const record = await this.getOrCreateView(instanceId);
     record.view.setBounds(this.lastBounds);
-    record.view.setVisible(true);
-    this.activeInstanceId = Number(instanceId);
     await this.navigate(instanceId, QQ_HOME);
     return this.getLoginStatus(instanceId, record, { wait: false });
   }
