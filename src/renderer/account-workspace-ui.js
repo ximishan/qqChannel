@@ -5,6 +5,11 @@
     return Boolean($('#instanceSelect')?.options?.length);
   }
 
+  function currentInstanceId() {
+    const value = Number($('#instanceSelect')?.value || 0);
+    return value || null;
+  }
+
   function keepLoginAvailable() {
     if (hasWorkspace()) return;
     const login = $('#btnLogin');
@@ -60,7 +65,6 @@
 
   async function reloadForBoundAccount() {
     setStatus('登录状态：已登录', 'good');
-    // 登录成功时 account_id 已在主进程绑定；刷新页面，让频道分组/频道/任务全部切到该账号工作区。
     window.location.reload();
   }
 
@@ -88,14 +92,14 @@
   }, true);
 
   $('#btnCheckLogin')?.addEventListener('click', async event => {
-    if (hasWorkspace()) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     setStatus('登录状态：检测中...', 'warn');
     try {
-      const result = await window.api.getLoginStatus(null);
+      const result = await window.api.getLoginStatus(currentInstanceId());
       if (result?.loggedIn) {
-        await reloadForBoundAccount();
+        setStatus('登录状态：已登录', 'good');
+        alert('登录正常');
       } else {
         setStatus('登录状态：未登录/已失效', 'bad');
         alert('未检测到登录状态，请点击“登录QQ”扫码登录');
