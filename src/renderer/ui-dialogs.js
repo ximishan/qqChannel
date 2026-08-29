@@ -6,9 +6,63 @@
   let bypassConfirmCount = 0;
   let confirmPending = false;
 
+  function compactBatchPreview(text) {
+    if (!text.includes('分配预览：')) return text;
+
+    const totalMatch = text.match(/本次将创建\s*(\d+)\s*条任务/) || text.match(/中的\s*(\d+)\s*个频道/);
+    const total = totalMatch ? Number(totalMatch[1]) : 0;
+    const lines = text.split('\n');
+    const output = [];
+    let assignmentCount = 0;
+    let inPreview = false;
+    let summaryInserted = false;
+
+    for (const rawLine of lines) {
+      const line = String(rawLine || '');
+      const trimmed = line.trim();
+      if (trimmed === '分配预览：') {
+        inPreview = true;
+        output.push(line);
+        continue;
+      }
+
+      if (inPreview && /^\d+\.\s/.test(trimmed)) {
+        assignmentCount += 1;
+        if (assignmentCount <= 5) {
+          const compact = trimmed.length > 82 ? `${trimmed.slice(0, 79)}…` : trimmed;
+          output.push(compact);
+        } else if (!summaryInserted && total > 5) {
+          output.push(`……其余 ${total - 5} 个频道不展开显示`);
+          summaryInserted = true;
+        }
+        continue;
+      }
+
+      if (inPreview && /^……另有\s*\d+\s*个频道/.test(trimmed)) {
+        if (!summaryInserted && total > 5) {
+          output.push(`……其余 ${total - 5} 个频道不展开显示`);
+          summaryInserted = true;
+        }
+        continue;
+      }
+
+      output.push(line);
+    }
+
+    if (inPreview && !summaryInserted && total > 5 && assignmentCount >= 5) {
+      const continueIndex = output.findIndex(line => String(line).trim() === '是否继续？');
+      const summary = `……其余 ${total - 5} 个频道不展开显示`;
+      if (continueIndex >= 0) output.splice(continueIndex, 0, summary, '');
+      else output.push(summary);
+    }
+
+    return output.join('\n').replace(/\n{3,}/g, '\n\n');
+  }
+
   function normalizeMessage(value) {
-    const text = String(value ?? '').trim();
+    let text = String(value ?? '').trim();
     if (/^登录正常[：:].+/.test(text)) return '登录正常';
+    text = compactBatchPreview(text);
     return text || '操作完成';
   }
 
