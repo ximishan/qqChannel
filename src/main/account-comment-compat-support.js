@@ -2,6 +2,26 @@ module.exports = function installAccountCommentCompatSupport(DB) {
   if (DB.prototype.__accountCommentCompatSupportInstalled) return;
   DB.prototype.__accountCommentCompatSupportInstalled = true;
 
+  const originalInit = DB.prototype.init;
+  const originalListTasks = DB.prototype.listTasks;
+
+  // 修复旧版批量任务：account-workspace-support 曾把视频/图片评论写进 body，
+  // comment 留空。启动时把尚未完成的旧任务迁回真正的 comment 字段。
+  DB.prototype.init = function initAccountCommentCompatSupport() {
+    originalInit.call(this);
+    this.ensureColumn('tasks', 'comment', 'TEXT');
+
+    this.db.prepare(`
+      UPDATE tasks
+      SET comment = body,
+          body = ''
+      WHERE status IN ('pending','failed')
+        AND media_type IN ('video','image')
+        AND TRIM(COALESCE(comment,'')) = ''
+        AND TRIM(COALESCE(body,'')) <> ''
+    `).run();
+  };
+
   // account-workspace-support 会在 comment-support 之后再次覆盖 createTask。
   // 这里作为最后一层兼容补丁，同时保留 account_id 隔离和 comment 独立字段。
   DB.prototype.createTask = function createTaskForAccountWithComment(
@@ -77,5 +97,16 @@ module.exports = function installAccountCommentCompatSupport(DB) {
     });
 
     return tx();
+  };
+
+  // 前端任务列表历史上读取 body 作为“评论”列。
+  // 这里作为最终兜底，优先把 comment 映射到 body，确保列表立即显示真实评论。
+  DB.prototype.listTasks = function listTasksWithAccountCommentCompat(...args) {
+    const result = originalListTasks.apply(this, args);
+    result.items = (result.items || []).map(item => ({
+      ...item,
+      body: String(item.comment || item.body || '')
+    }));
+    return result;
   };
 };
