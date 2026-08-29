@@ -60,6 +60,38 @@ async function hidePublishingBrowser(instanceId) {
   await browserManager.setViewState({ instanceId, visible: false });
 }
 
+function scanVideoFilesRecursive(rootFolder) {
+  const supported = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.wmv']);
+  const files = [];
+
+  const walk = folder => {
+    let entries;
+    try {
+      entries = fs.readdirSync(folder, { withFileTypes: true });
+    } catch (error) {
+      if (folder === rootFolder) throw error;
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(folder, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() && supported.has(path.extname(entry.name).toLowerCase())) {
+        files.push(fullPath);
+      }
+    }
+  };
+
+  walk(rootFolder);
+
+  return [...new Set(files)].sort((a, b) => {
+    const relativeA = path.relative(rootFolder, a);
+    const relativeB = path.relative(rootFolder, b);
+    return relativeA.localeCompare(relativeB, 'zh-CN', { numeric: true, sensitivity: 'base' });
+  });
+}
+
 function registerIPC() {
   ipcMain.handle('instances:list', () => db.listInstances());
   ipcMain.handle('instances:create', (_, name) => {
@@ -157,8 +189,7 @@ function registerIPC() {
     const r = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths[0]) return null;
     const folder = r.filePaths[0];
-    const supported = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.wmv']);
-    const files = fs.readdirSync(folder, { withFileTypes: true }).filter(entry => entry.isFile() && supported.has(path.extname(entry.name).toLowerCase())).map(entry => path.join(folder, entry.name)).sort((a, b) => path.basename(a).localeCompare(path.basename(b), 'zh-CN', { numeric: true, sensitivity: 'base' }));
+    const files = scanVideoFilesRecursive(folder);
     return { folder, files };
   });
 
