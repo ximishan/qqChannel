@@ -149,14 +149,6 @@
     document.body.appendChild(script);
   }
 
-  // 评论区默认值：保存到 settings，创建普通任务/批量视频任务时自动填充。
-  if (!document.querySelector('script[data-comment-default-setting]')) {
-    const script = document.createElement('script');
-    script.src = 'comment-default-setting.js';
-    script.dataset.commentDefaultSetting = '1';
-    document.body.appendChild(script);
-  }
-
   // 账号工作区：退出后没有频道分组时仍允许登录；登录成功后按 account_id 恢复对应数据。
   if (!document.querySelector('script[data-account-workspace-ui]')) {
     const script = document.createElement('script');
