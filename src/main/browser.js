@@ -504,32 +504,64 @@ class BrowserManager {
     if (!login.loggedIn) throw new Error('当前实例未登录，请先在内置浏览器完成 QQ 登录');
 
     const deadline = Date.now() + 15000;
-    let rows = [];
+    let candidates = [];
     while (Date.now() < deadline) {
-      rows = await record.view.webContents.executeJavaScript(`(() => {
-        const result = [];
-        const seen = new Set();
-        for (const anchor of document.querySelectorAll('a[href*="/g/"]')) {
-          let url;
-          try {
-            const parsed = new URL(anchor.getAttribute('href') || '', location.href);
-            const match = parsed.pathname.match(/^\\/g\\/([^/?#]+)/i);
-            if (!match) continue;
-            url = 'https://pd.qq.com/g/' + match[1];
-          } catch (_) { continue; }
-          if (seen.has(url)) continue;
-          const raw = String(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || anchor.innerText || anchor.textContent || '')
-            .replace(/\\s+/g, ' ').trim();
-          const imageAlt = String(anchor.querySelector('img')?.alt || '').trim();
-          const name = (raw || imageAlt).replace(/^(进入|打开)/, '').trim();
-          if (!name || /^(首页|频道|发现|管理中心)$/.test(name)) continue;
-          seen.add(url);
-          result.push({ name: name.slice(0, 100), url, guildNumber: url.split('/').pop() });
-        }
-        return result;
-      })()`, true).catch(() => []);
-      if (rows.length) break;
+      candidates = await record.view.webContents.executeJavaScript(`(() =>
+        [...document.querySelectorAll('.my-guild-item')].map((item, index) => {
+          const image = item.querySelector('img');
+          const name = String(item.getAttribute('title') || item.querySelector('.item-name')?.textContent || image?.alt || '')
+            .replace(/^腾讯频道-/, '').replace(/-头像$/, '').replace(/\\s+/g, ' ').trim();
+          const avatar = String(image?.src || '');
+          const groupId = (avatar.match(/groupprohead\\.gtimg\\.cn\\/(\\d+)\\//) || [])[1] || '';
+          return { index, name, groupId };
+        }).filter(item => item.name)
+      )()`, true).catch(() => []);
+      if (candidates.length) break;
       await sleep(500);
+    }
+
+    const rows = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      const previousUrl = record.view.webContents.getURL();
+      const clicked = await record.view.webContents.executeJavaScript(`(() => {
+        const candidate = ${JSON.stringify(candidate)};
+        const items = [...document.querySelectorAll('.my-guild-item')];
+        const target = items.find((item) => {
+          const image = item.querySelector('img');
+          const avatar = String(image?.src || '');
+          if (candidate.groupId && avatar.includes('/' + candidate.groupId + '/')) return true;
+          return String(item.getAttribute('title') || '').trim() === candidate.name;
+        }) || items[candidate.index];
+        if (!target) return false;
+        target.scrollIntoView({ block: 'nearest' });
+        target.click();
+        return true;
+      })()`, true).catch(() => false);
+      if (!clicked) continue;
+
+      let channelUrl = '';
+      const navigationDeadline = Date.now() + 3500;
+      while (Date.now() < navigationDeadline) {
+        const currentUrl = record.view.webContents.getURL();
+        try {
+          const parsed = new URL(currentUrl);
+          const match = parsed.pathname.match(/^\/g\/([^/?#]+)/i);
+          if (match && (currentUrl !== previousUrl || rows.length === 0)) {
+            channelUrl = 'https://pd.qq.com/g/' + match[1];
+            break;
+          }
+        } catch (_) {}
+        await sleep(100);
+      }
+      if (!channelUrl || seen.has(channelUrl)) continue;
+      seen.add(channelUrl);
+      rows.push({
+        name: candidate.name.slice(0, 100),
+        url: channelUrl,
+        guildNumber: channelUrl.split('/').pop(),
+        groupId: candidate.groupId
+      });
     }
 
     return rows.map(item => ({

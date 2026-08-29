@@ -12,6 +12,12 @@ let mainWindow;
 
 app.setPath('userData', path.join(app.getPath('appData'), 'tencent-channel-publisher-demo'));
 
+// Local diagnostics only: opt in with an environment variable so packaged
+// builds never expose a DevTools endpoint by default.
+if (process.env.QQCHANNEL_REMOTE_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.QQCHANNEL_REMOTE_DEBUG_PORT);
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1450,
