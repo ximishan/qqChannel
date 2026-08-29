@@ -6,4 +6,5 @@ const BrowserManager = require('./browser');
 require('./comment-support')(DB, BrowserManager);
 require('./comment-dom-fix-support')(DB, BrowserManager);
 require('./publish-dom-fix-support')(DB, BrowserManager);
+require('./publish-composer-open-support')(DB, BrowserManager);
 require('./main');
