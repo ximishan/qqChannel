@@ -161,8 +161,9 @@
       return true;
     }
 
+    if (confirmPending) return false;
     const replay = lastReplayAction;
-    if (!replay || confirmPending) return nativeConfirm(normalizeMessage(message));
+    if (!replay) return nativeConfirm(normalizeMessage(message));
 
     confirmPending = true;
     window.appConfirm(message).then(approved => {
