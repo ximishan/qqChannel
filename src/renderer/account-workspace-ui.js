@@ -29,6 +29,15 @@
     }
   }
 
+  function normalizeLoginStatusText() {
+    const status = $('#loginStatus');
+    if (!status) return;
+    const current = String(status.textContent || '').trim();
+    if (/^(?:登录状态：)?已登录(?:[：·\s].*)?$/.test(current) && current !== '登录状态：已登录') {
+      status.textContent = '登录状态：已登录';
+    }
+  }
+
   function showQr(result = {}) {
     const qr = $('#publisherLoginQr');
     if (qr) {
@@ -49,9 +58,8 @@
     $('#publisherLoginDialog')?.showModal();
   }
 
-  async function reloadForBoundAccount(result = {}) {
-    const accountId = Number(result.accountId || 0);
-    setStatus(accountId ? `已登录 · 本地账号 #${accountId}` : '已登录', 'good');
+  async function reloadForBoundAccount() {
+    setStatus('登录状态：已登录', 'good');
     // 登录成功时 account_id 已在主进程绑定；刷新页面，让频道分组/频道/任务全部切到该账号工作区。
     window.location.reload();
   }
@@ -66,7 +74,7 @@
     try {
       const result = await window.api.openLogin(null);
       if (result?.alreadyLoggedIn || result?.loggedIn || result?.valid) {
-        await reloadForBoundAccount(result);
+        await reloadForBoundAccount();
         return;
       }
       showQr(result);
@@ -87,7 +95,7 @@
     try {
       const result = await window.api.getLoginStatus(null);
       if (result?.loggedIn) {
-        await reloadForBoundAccount(result);
+        await reloadForBoundAccount();
       } else {
         setStatus('登录状态：未登录/已失效', 'bad');
         alert('未检测到登录状态，请点击“登录QQ”扫码登录');
@@ -110,7 +118,7 @@
       const result = await window.api.pollPublisherLogin();
       if (!result?.loggedIn) throw new Error(result?.message || '尚未完成扫码授权');
       $('#publisherLoginDialog')?.close();
-      await reloadForBoundAccount(result);
+      await reloadForBoundAccount();
     } catch (error) {
       if (message) message.textContent = `授权未完成：${String(error?.message || error)}`;
     } finally {
@@ -118,29 +126,18 @@
     }
   }, true);
 
-  async function annotateAccountId() {
-    if (!hasWorkspace()) return;
-    try {
-      const settings = await window.api.listSettings();
-      const item = (settings || []).find(row => row.key === 'active_qq_account_id');
-      const accountId = Number(item?.value || 0);
-      const status = $('#loginStatus');
-      if (!accountId || !status || !/^已登录/.test(status.textContent || '')) return;
-      if (!status.textContent.includes(`账号 #${accountId}`)) status.textContent += ` · 账号 #${accountId}`;
-    } catch (_) {}
-  }
-
   const select = $('#instanceSelect');
   if (select) new MutationObserver(() => {
     keepLoginAvailable();
-    annotateAccountId();
+    normalizeLoginStatusText();
   }).observe(select, { childList: true, subtree: true });
 
   const status = $('#loginStatus');
-  if (status) new MutationObserver(() => annotateAccountId()).observe(status, { childList: true, characterData: true, subtree: true });
+  if (status) new MutationObserver(() => normalizeLoginStatusText()).observe(status, { childList: true, characterData: true, subtree: true });
 
   keepLoginAvailable();
+  normalizeLoginStatusText();
   setTimeout(keepLoginAvailable, 100);
   setTimeout(keepLoginAvailable, 500);
-  setTimeout(() => annotateAccountId(), 500);
+  setTimeout(normalizeLoginStatusText, 500);
 })();
