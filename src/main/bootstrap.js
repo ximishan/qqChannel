@@ -14,4 +14,6 @@ require('./userscript-dom-publishing-support')(DB, BrowserManager);
 require('./instance-window-support')(BrowserManager);
 // 登录状态必须按实例隔离，并且只有明确看到登录页时才允许把已登录状态降级。
 require('./login-state-fix-support')(DB, BrowserManager);
+// 点击“登录QQ”后自动触发 QQ 登录入口，并等待二维码登录框出现。
+require('./login-qr-support')(BrowserManager);
 require('./main');
