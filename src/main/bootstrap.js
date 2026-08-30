@@ -6,4 +6,7 @@ const BrowserManager = require('./browser');
 require('./comment-support')(DB, BrowserManager);
 require('./comment-dom-fix-support')(DB, BrowserManager);
 require('./publish-open-fallback-support')(DB, BrowserManager);
+// 最后加载用户已在 Tampermonkey 中实测通过的 QQ 频道 DOM 发布/评论链路。
+// 该兼容层覆盖发布目标执行，但继续复用多账号、SQLite、队列、截图和重试状态机。
+require('./userscript-dom-publishing-support')(DB, BrowserManager);
 require('./main');
