@@ -31,6 +31,14 @@
     document.head.appendChild(script);
   }
 
+  function loadSettingsUiCleanup() {
+    if (document.querySelector('script[data-qqchannel-settings-cleanup="1"]')) return;
+    const script = document.createElement('script');
+    script.src = 'settings-ui-cleanup.js';
+    script.dataset.qqchannelSettingsCleanup = '1';
+    document.head.appendChild(script);
+  }
+
   async function waitFor(fn, timeout = 10000) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -100,8 +108,11 @@
       select.dispatchEvent(new Event('change', { bubbles: true }));
       await sleep(250);
     }
-    select.disabled = true;
-    select.title = '当前窗口已固定绑定这个实例';
+
+    // 下拉框不再锁死。它只作为“实例窗口导航器”：
+    // 选择其他实例会打开/聚焦那个实例自己的窗口，当前窗口仍固定当前实例。
+    select.disabled = false;
+    select.title = '选择其他实例可打开或聚焦对应实例窗口';
 
     const channelSelect = $('#channelInstanceSelect');
     if (channelSelect) {
@@ -123,6 +134,39 @@
     $('#btnQueueStartAll')?.classList.add('hidden');
     $('#btnQueueStopAll')?.classList.add('hidden');
     scopeAllTargets();
+  }
+
+  async function installInstanceWindowSwitcher() {
+    if (!fixedInstanceId) return;
+    const select = await waitFor(() => $('#instanceSelect'), 12000);
+    if (!select || select.dataset.instanceWindowSwitcher === '1') return;
+    select.dataset.instanceWindowSwitcher = '1';
+
+    // capture 阶段截住 app.js 原有的“切换当前实例”逻辑，避免当前窗口串号。
+    select.addEventListener('change', event => {
+      const targetId = Number(select.value || 0);
+      if (!targetId || targetId === fixedInstanceId) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      select.value = String(fixedInstanceId);
+
+      setTimeout(async () => {
+        try {
+          const rows = await getInstances();
+          const target = rows.find(item => Number(item.id) === targetId);
+          if (!target) {
+            window.qqToast?.('实例不存在，请刷新后重试', { type: 'error' });
+            return;
+          }
+          await openWindowFor(target);
+        } catch (error) {
+          const message = `打开实例失败：${String(error?.message || error)}`;
+          if (typeof window.qqToast === 'function') window.qqToast(message, { type: 'error' });
+          else alert(message);
+        }
+      }, 0);
+    }, true);
   }
 
   function installSelectAllGuards() {
@@ -175,6 +219,7 @@
 
   async function bootFixedWindow() {
     await restoreFixedInstance();
+    await installInstanceWindowSwitcher();
     observeTargetHost('#taskChannelList');
     observeTargetHost('#batchChannelList');
     installSelectAllGuards();
@@ -188,6 +233,7 @@
     loadUiFeedback();
     loadQrLoginUi();
     loadBatchContentUi();
+    loadSettingsUiCleanup();
     installCreateInstanceWatcher();
     if (fixedInstanceId) {
       bootFixedWindow().catch(error => console.error('实例窗口初始化失败', error));
