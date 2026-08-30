@@ -160,7 +160,7 @@
     $('#btnBatchVideo')?.addEventListener('click', () => setTimeout(scopeAllTargets, 250));
   }
 
-  window.addEventListener('DOMContentLoaded', () => {
+  function start() {
     installCreateInstanceWatcher();
     if (fixedInstanceId) {
       bootFixedWindow().catch(error => console.error('实例窗口初始化失败', error));
@@ -168,5 +168,11 @@
       // 初始窗口只负责协调。已有实例时自动为每个实例创建独立窗口，然后隐藏自身。
       setTimeout(() => bootCoordinator().catch(error => console.error('打开实例窗口失败', error)), 500);
     }
-  });
+  }
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
 })();
