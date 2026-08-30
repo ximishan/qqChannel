@@ -12,4 +12,6 @@ require('./publish-open-fallback-support')(DB, BrowserManager);
 require('./userscript-dom-publishing-support')(DB, BrowserManager);
 // 每个账号实例对应一个独立桌面窗口，内置浏览器视图也绑定到该实例窗口。
 require('./instance-window-support')(BrowserManager);
+// 登录状态必须按实例隔离，并且只有明确看到登录页时才允许把已登录状态降级。
+require('./login-state-fix-support')(DB, BrowserManager);
 require('./main');
