@@ -75,4 +75,12 @@
   document.querySelector('.tab[data-tab="settings"]')?.addEventListener('click', () => {
     loadDefaultComment();
   });
+
+  // 多实例窗口脚本放在最后加载，确保它可以覆盖/约束前面已经注册的实例选择与任务弹窗行为。
+  if (!document.querySelector('script[data-instance-window-ui]')) {
+    const script = document.createElement('script');
+    script.src = 'instance-window-ui.js';
+    script.dataset.instanceWindowUi = '1';
+    document.body.appendChild(script);
+  }
 })();
