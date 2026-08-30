@@ -1,7 +1,27 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 实例窗口通过 ?instanceId=xx 固定绑定账号。app.js 启动时会默认选择
+// listInstances() 返回的第一项，因此这里从源头把当前窗口实例排到第一位，
+// 避免新窗口先拿“实例 1”的登录状态、频道和任务，再异步切回自己的实例。
+const fixedInstanceId = (() => {
+  try {
+    return Math.max(0, Number(new URLSearchParams(globalThis.location?.search || '').get('instanceId')) || 0);
+  } catch (_) {
+    return 0;
+  }
+})();
+
+async function listInstancesForCurrentWindow() {
+  const rows = await ipcRenderer.invoke('instances:list');
+  if (!fixedInstanceId || !Array.isArray(rows)) return rows;
+  const own = rows.find(item => Number(item.id) === fixedInstanceId);
+  if (!own) return rows;
+  return [own, ...rows.filter(item => Number(item.id) !== fixedInstanceId)];
+}
+
 contextBridge.exposeInMainWorld('api', {
-  listInstances: () => ipcRenderer.invoke('instances:list'),
+  listInstances: () => listInstancesForCurrentWindow(),
+  fixedInstanceId: () => fixedInstanceId || null,
   createInstance: (name) => ipcRenderer.invoke('instances:create', name),
   updateInstanceName: (data) => ipcRenderer.invoke('instances:updateName', data),
   getInstanceSummary: (id) => ipcRenderer.invoke('instances:summary', id),
