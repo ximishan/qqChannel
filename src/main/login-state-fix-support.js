@@ -1,5 +1,16 @@
 module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const isQQLoginUrl = value => {
+    try {
+      const host = new URL(String(value || '')).hostname.toLowerCase();
+      return host === 'ptlogin2.qq.com'
+        || host.endsWith('.ptlogin2.qq.com')
+        || host === 'login.qq.com'
+        || host.endsWith('.login.qq.com');
+    } catch (_) {
+      return false;
+    }
+  };
 
   DB.prototype.getInstanceLoginSnapshot = function getInstanceLoginSnapshot(id) {
     return this.db.prepare(`
@@ -12,10 +23,13 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
     const id = this.normalizeInstanceId(instanceId);
     const record = existingRecord || await this.getOrCreateView(id);
     const webContents = record.view.webContents;
-    const currentUrl = String(webContents.getURL() || '');
+    let currentUrl = String(webContents.getURL() || '');
 
-    if (!currentUrl.startsWith('https://pd.qq.com/')) {
+    // QQ 登录框有时是 pd.qq.com 页内 iframe，有时会导航到 ptlogin2.qq.com。
+    // 扫码过程中不能把 ptlogin 页面强制导航回 pd.qq.com，否则二维码会被关掉。
+    if (!currentUrl.startsWith('https://pd.qq.com/') && !isQQLoginUrl(currentUrl)) {
       await this.navigate(id, 'https://pd.qq.com/');
+      currentUrl = String(webContents.getURL() || '');
     }
 
     const selectors = this.db.getSelectorMap();
@@ -24,6 +38,15 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
     let resolved = null;
 
     while (Date.now() < deadline) {
+      const urlNow = String(webContents.getURL() || '');
+
+      // 独立 QQ 登录页本身就表示正在等待扫码，不应判定为退出登录。
+      if (isQQLoginUrl(urlNow)) {
+        resolved = { state: 'pending_login', name: '' };
+        await sleep(300);
+        continue;
+      }
+
       const configured = await this.elementAction(webContents, selectors.logged_in_user, 'inspect').catch(() => null);
       if (configured?.found) {
         resolved = { state: 'logged_in', name: String(configured.text || '').trim() };
@@ -55,10 +78,13 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
           /^(管理中心|我的频道)$/.test(text(el))
         );
         const guildItem = document.querySelector('.my-guild-item');
+        const qr = [...document.querySelectorAll('[class*="qrcode"],[class*="qr-code"],[id*="qrcode"],iframe')]
+          .find(el => visible(el) && (el.tagName !== 'IFRAME' || /(ptlogin2\\.qq\\.com|login\\.qq\\.com)/i.test(String(el.src || ''))));
 
         if (user || authenticatedNav || guildItem) {
           return { state: 'logged_in', name: text(user) };
         }
+        if (qr) return { state: 'pending_login', name: '' };
         if (loginButton) {
           return { state: 'logged_out', name: '' };
         }
@@ -69,6 +95,7 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
         resolved = domState;
         break;
       }
+      if (domState.state === 'pending_login') resolved = domState;
       await sleep(250);
     }
 
@@ -96,6 +123,18 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
         url: webContents.getURL(),
         instanceId: id,
         verified: true
+      };
+    }
+
+    // 二维码正在显示时，不修改实例数据库中的登录状态。
+    if (resolved?.state === 'pending_login' || isQQLoginUrl(webContents.getURL())) {
+      return {
+        loggedIn: false,
+        name: '',
+        url: webContents.getURL(),
+        instanceId: id,
+        verified: false,
+        loginPending: true
       };
     }
 
