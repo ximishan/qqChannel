@@ -23,6 +23,14 @@
     document.head.appendChild(script);
   }
 
+  function loadBatchContentUi() {
+    if (document.querySelector('script[data-qqchannel-batch-content="1"]')) return;
+    const script = document.createElement('script');
+    script.src = 'batch-content-support-ui.js';
+    script.dataset.qqchannelBatchContent = '1';
+    document.head.appendChild(script);
+  }
+
   async function waitFor(fn, timeout = 10000) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -179,6 +187,7 @@
   function start() {
     loadUiFeedback();
     loadQrLoginUi();
+    loadBatchContentUi();
     installCreateInstanceWatcher();
     if (fixedInstanceId) {
       bootFixedWindow().catch(error => console.error('实例窗口初始化失败', error));
