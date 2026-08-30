@@ -7,6 +7,14 @@
 
   window.QQCHANNEL_FIXED_INSTANCE_ID = fixedInstanceId || null;
 
+  function loadUiFeedback() {
+    if (document.querySelector('script[data-qqchannel-ui-feedback="1"]')) return;
+    const script = document.createElement('script');
+    script.src = 'ui-feedback.js';
+    script.dataset.qqchannelUiFeedback = '1';
+    document.head.appendChild(script);
+  }
+
   function loadQrLoginUi() {
     if (document.querySelector('script[data-qqchannel-qr-login="1"]')) return;
     const script = document.createElement('script');
@@ -169,6 +177,7 @@
   }
 
   function start() {
+    loadUiFeedback();
     loadQrLoginUi();
     installCreateInstanceWatcher();
     if (fixedInstanceId) {
