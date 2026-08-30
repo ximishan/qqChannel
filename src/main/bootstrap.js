@@ -16,4 +16,6 @@ require('./instance-window-support')(BrowserManager);
 require('./login-state-fix-support')(DB, BrowserManager);
 // 点击“登录QQ”后自动触发 QQ 登录入口，并等待二维码登录框出现。
 require('./login-qr-support')(BrowserManager);
+// QQ 当前激活频道可能不再使用 .my-guild-item；同步时额外合并当前 /g/... 页面频道。
+require('./channel-current-page-sync-support')(BrowserManager);
 require('./main');
