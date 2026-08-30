@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('api', {
   updateInstanceName: (data) => ipcRenderer.invoke('instances:updateName', data),
   getInstanceSummary: (id) => ipcRenderer.invoke('instances:summary', id),
   deleteInstance: (id) => ipcRenderer.invoke('instances:delete', id),
+  openInstanceWindow: (data) => ipcRenderer.invoke('instanceWindows:open', data),
+  hideCoordinatorWindow: () => ipcRenderer.invoke('instanceWindows:hideCoordinator'),
+  showCoordinatorWindow: () => ipcRenderer.invoke('instanceWindows:showCoordinator'),
 
   listChannels: (instanceId) => ipcRenderer.invoke('channels:list', instanceId),
   listChannelAssignments: () => ipcRenderer.invoke('channels:overview'),
