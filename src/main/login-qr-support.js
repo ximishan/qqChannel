@@ -1,0 +1,140 @@
+module.exports = function installLoginQrSupport(BrowserManager) {
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  async function waitFor(webContents, script, timeout = 12000, interval = 200) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const value = await webContents.executeJavaScript(script, true).catch(() => null);
+      if (value) return value;
+      await sleep(interval);
+    }
+    return null;
+  }
+
+  BrowserManager.prototype.openLoginQrCode = async function openLoginQrCode(instanceId, record = null) {
+    const id = this.normalizeInstanceId(instanceId);
+    const browserRecord = record || await this.getOrCreateView(id);
+    const webContents = browserRecord.view.webContents;
+
+    if (!String(webContents.getURL() || '').startsWith('https://pd.qq.com/')) {
+      await this.navigate(id, 'https://pd.qq.com/');
+    }
+
+    // 等首页主体出现，防止页面尚未渲染就开始找登录入口。
+    await waitFor(webContents, `(() => document.readyState === 'complete' || document.body?.children?.length > 2)()`, 10000, 150);
+
+    const clickResult = await waitFor(webContents, `(() => {
+      const text = el => String(el?.innerText || el?.textContent || el?.value || '').replace(/\\s+/g, ' ').trim();
+      const visible = el => {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+      };
+      const exact = /^(登录|QQ登录|扫码登录|立即登录)$/;
+      const candidates = [
+        ...document.querySelectorAll('.app-login button,.app-login a,.app-login [role="button"],header button,header a,button,a,[role="button"]')
+      ].filter(el => visible(el) && exact.test(text(el)));
+      const el = candidates[0] || [...document.querySelectorAll('.app-login,[class*="login"]')]
+        .find(node => visible(node) && exact.test(text(node)));
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      try { el.focus(); } catch (_) {}
+      const view = el.ownerDocument?.defaultView || window;
+      for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+        try {
+          const Ctor = type.startsWith('pointer') && view.PointerEvent ? view.PointerEvent : view.MouseEvent;
+          el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view, buttons: type.includes('down') ? 1 : 0 }));
+        } catch (_) {}
+      }
+      try { el.click(); } catch (_) {}
+      return { clicked: true, text: text(el), tag: el.tagName, className: String(el.className || '') };
+    })()`, 10000, 180);
+
+    if (!clickResult?.clicked) {
+      return {
+        triggered: false,
+        reason: 'login_entry_not_found',
+        url: webContents.getURL()
+      };
+    }
+
+    // 登录框通常是 ptlogin iframe，也兼容 QQ 改成页面内二维码的情况。
+    const qrEvidence = await waitFor(webContents, `(() => {
+      const visible = el => {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+      };
+      const frames = [...document.querySelectorAll('iframe')];
+      const loginFrame = frames.find(frame => {
+        const src = String(frame.src || frame.getAttribute('src') || '');
+        return visible(frame) && /(ptlogin2\\.qq\\.com|xui\\.ptlogin2\\.qq\\.com|login\\.qq\\.com|ssl\\.ptlogin2\\.qq\\.com)/i.test(src);
+      });
+      if (loginFrame) return { type: 'iframe', src: String(loginFrame.src || '') };
+
+      const qr = [...document.querySelectorAll([
+        '[class*="qrcode"]','[class*="qr-code"]','[class*="qr_code"]','[id*="qrcode"]','[id*="qrlogin"]',
+        'img[src*="qrcode"]','img[src*="qr"]','canvas'
+      ].join(','))].find(visible);
+      if (qr) return { type: 'qrcode', tag: qr.tagName, className: String(qr.className || '') };
+
+      const bodyText = String(document.body?.innerText || '').replace(/\\s+/g, ' ');
+      if (/扫码登录|手机QQ扫码|二维码登录|请使用手机QQ扫描二维码/.test(bodyText)) return { type: 'text' };
+      return null;
+    })()`, 12000, 200);
+
+    return {
+      triggered: true,
+      confirmed: Boolean(qrEvidence),
+      evidence: qrEvidence || null,
+      clicked: clickResult,
+      url: webContents.getURL()
+    };
+  };
+
+  BrowserManager.prototype.beginPublishingLogin = async function beginPublishingLoginWithQr(instanceId) {
+    const id = this.normalizeInstanceId(instanceId);
+    const record = await this.getOrCreateView(id);
+    record.view.setBounds(this.lastBounds);
+    await this.navigate(id, 'https://pd.qq.com/');
+
+    const status = await this.getLoginStatus(id, record, { wait: false });
+    if (status.loggedIn) {
+      return {
+        ...status,
+        requiresBrowser: false,
+        qrTriggered: false,
+        message: '当前实例已经登录'
+      };
+    }
+
+    const qr = await this.openLoginQrCode(id, record).catch(error => ({
+      triggered: false,
+      reason: String(error?.message || error),
+      url: record.view.webContents.getURL()
+    }));
+
+    if (!qr.triggered) {
+      this.db.log('warn', `实例 #${id} 未能自动打开 QQ 登录二维码：${qr.reason || '未找到登录入口'}`);
+    } else if (!qr.confirmed) {
+      this.db.log('warn', `实例 #${id} 已自动点击 QQ 登录入口，但暂未确认二维码 DOM；当前页面：${qr.url || ''}`);
+    } else {
+      this.db.log('info', `实例 #${id} QQ 登录二维码已自动打开`);
+    }
+
+    return {
+      ...status,
+      loggedIn: false,
+      requiresBrowser: true,
+      qrTriggered: Boolean(qr.triggered),
+      qrConfirmed: Boolean(qr.confirmed),
+      message: qr.confirmed
+        ? 'QQ 登录二维码已打开，请使用手机 QQ 扫码'
+        : qr.triggered
+          ? '已自动打开 QQ 登录入口，请稍候二维码加载'
+          : '未能自动弹出二维码，请刷新内置浏览器后重试登录'
+    };
+  };
+};
