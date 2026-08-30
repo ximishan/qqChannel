@@ -19,10 +19,19 @@ async function listInstancesForCurrentWindow() {
   return [own, ...rows.filter(item => Number(item.id) !== fixedInstanceId)];
 }
 
+async function createInstanceWithoutSwitchingCurrentWindow(name) {
+  const created = await ipcRenderer.invoke('instances:create', name);
+  if (!fixedInstanceId) return created;
+  // app.js 创建成功后会把 currentInstanceId 设置为返回值 id。固定实例窗口不能
+  // 因为创建新账号而短暂切换到新实例，所以这里对当前窗口返回自己的 id；
+  // instance-window-ui 会通过实例列表差集找到真正新增的实例并为它打开新窗口。
+  return { ...created, createdInstanceId: Number(created.id), id: fixedInstanceId };
+}
+
 contextBridge.exposeInMainWorld('api', {
   listInstances: () => listInstancesForCurrentWindow(),
   fixedInstanceId: () => fixedInstanceId || null,
-  createInstance: (name) => ipcRenderer.invoke('instances:create', name),
+  createInstance: (name) => createInstanceWithoutSwitchingCurrentWindow(name),
   updateInstanceName: (data) => ipcRenderer.invoke('instances:updateName', data),
   getInstanceSummary: (id) => ipcRenderer.invoke('instances:summary', id),
   deleteInstance: (id) => ipcRenderer.invoke('instances:delete', id),
