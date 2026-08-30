@@ -74,7 +74,7 @@ module.exports = function installUserscriptDomPublishingSupport(DB, BrowserManag
     const enabled = await wait(() => webContents.executeJavaScript(`(()=>{const b=document.querySelector(${JSON.stringify(S.cSend)});return !!(b&&!b.disabled&&!b.classList.contains('disabled')&&b.getAttribute('aria-disabled')!=='true')})()`, true), 10000, 120);
     if (!enabled) throw new Error('油猴DOM：评论发送按钮一直不可用');
     await webContents.executeJavaScript(`(()=>{const b=document.querySelector(${JSON.stringify(S.cSend)});if(!b)return false;b.click();return true})()`, true);
-    const verified = await wait(() => webContents.executeJavaScript(`(()=>{const l=document.querySelector('#comment-container-'+CSS.escape(${JSON.stringify(feedId)})),n=l?l.querySelectorAll(${JSON.stringify(S.cItem)}).length:0;return n>${Number(0)}||!document.querySelector(${JSON.stringify(S.cBox)})||!!document.querySelector(${JSON.stringify(S.cPlaceholder)})})()`, true), 20000, 200);
+    const verified = await wait(() => webContents.executeJavaScript(`(()=>{const l=document.querySelector('#comment-container-'+CSS.escape(${JSON.stringify(feedId)})),n=l?l.querySelectorAll(${JSON.stringify(S.cItem)}).length:0;return n>${Number(before)||0}||!document.querySelector(${JSON.stringify(S.cBox)})||!!document.querySelector(${JSON.stringify(S.cPlaceholder)})})()`, true), 20000, 200);
     if (!verified) throw new Error('油猴DOM：点击发送后未确认评论成功');
     return { postUrl: webContents.getURL(), feedId };
   };
