@@ -1,5 +1,5 @@
 const path = require('path');
-const { BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 
 module.exports = function installInstanceWindowSupport(BrowserManager) {
   const instanceWindows = global.__QQCHANNEL_INSTANCE_WINDOWS__ || new Map();
@@ -50,9 +50,11 @@ module.exports = function installInstanceWindowSupport(BrowserManager) {
 
     win.on('closed', () => {
       if (instanceWindows.get(id) === win) instanceWindows.delete(id);
+      // 协调窗口只负责首次创建/启动实例，不承载登录和发布业务。
+      // 最后一个实例窗口关闭后直接退出，避免协调窗口重新出现后
+      // WebContentsView 仍固定挂在实例窗口、导致“登录按钮有反应但浏览器空白”。
       if (instanceWindows.size === 0 && coordinatorWindow && !coordinatorWindow.isDestroyed() && !coordinatorWindow.isVisible()) {
-        coordinatorWindow.show();
-        coordinatorWindow.focus();
+        app.quit();
       }
     });
 
