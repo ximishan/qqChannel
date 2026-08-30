@@ -1,5 +1,5 @@
 const path = require('path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { BrowserWindow, ipcMain } = require('electron');
 
 module.exports = function installInstanceWindowSupport(BrowserManager) {
   const instanceWindows = global.__QQCHANNEL_INSTANCE_WINDOWS__ || new Map();
@@ -84,6 +84,11 @@ module.exports = function installInstanceWindowSupport(BrowserManager) {
   const originalGetOrCreateView = BrowserManager.prototype.getOrCreateView;
   BrowserManager.prototype.getOrCreateView = async function getOrCreateViewForInstanceWindow(instanceId) {
     const id = this.normalizeInstanceId(instanceId);
+    const existing = this.views.get(id);
+    if (existing?.view?.webContents?.isDestroyed?.()) {
+      this.views.delete(id);
+    }
+
     const record = await originalGetOrCreateView.call(this, id);
     const target = instanceWindows.get(id);
 
