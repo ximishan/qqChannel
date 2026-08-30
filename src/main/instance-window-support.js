@@ -51,7 +51,8 @@ module.exports = function installInstanceWindowSupport(BrowserManager) {
     win.on('closed', () => {
       if (instanceWindows.get(id) === win) instanceWindows.delete(id);
       if (instanceWindows.size === 0 && coordinatorWindow && !coordinatorWindow.isDestroyed() && !coordinatorWindow.isVisible()) {
-        app.quit();
+        coordinatorWindow.show();
+        coordinatorWindow.focus();
       }
     });
 
