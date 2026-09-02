@@ -34,9 +34,6 @@ contextBridge.exposeInMainWorld('api', {
   showCoordinatorWindow: () => ipcRenderer.invoke('instanceWindows:showCoordinator'),
 
   listChannels: instanceId => ipcRenderer.invoke('channels:list', instanceId),
-  listChannelAssignments: () => ipcRenderer.invoke('channels:overview'),
-  moveChannel: data => ipcRenderer.invoke('channels:move', data),
-  addChannel: data => ipcRenderer.invoke('channels:add', data),
   updateChannelName: data => ipcRenderer.invoke('channels:updateName', data),
   deleteChannel: id => ipcRenderer.invoke('channels:delete', id),
   listRemoteChannels: instanceId => ipcRenderer.invoke('channels:remoteList', instanceId),
