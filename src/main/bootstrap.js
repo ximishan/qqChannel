@@ -22,4 +22,7 @@ require('./login-state-fix-support')(DB, BrowserManager);
 require('./login-qr-support')(BrowserManager);
 // QQ 当前激活频道可能不再使用 .my-guild-item；同步时额外合并当前 /g/... 页面频道。
 require('./channel-current-page-sync-support')(BrowserManager);
+// 只读归属识别：复用旧版隔离的频道接口授权，结合 owners + 频道列表标记
+// owned / not_owned / unknown。它不参与登录、发帖、评论，也不会覆盖 DOM 发布主链。
+require('./channel-owner-filter-support')(DB, BrowserManager);
 require('./main');
