@@ -121,7 +121,9 @@
             guildNumber: item.guildNumber,
             name: item.name,
             url: item.url,
-            source: item.source
+            source: item.source,
+            ownershipStatus: item.ownershipStatus,
+            ownerTinyId: item.ownerTinyId
           }))
         });
         await refreshLocalChannelList();
@@ -130,9 +132,10 @@
       lastSyncAt = Date.now();
       if (result) {
         result.style.color = '#17a663';
+        const excluded = remoteGuilds.filter(item => item.ownershipStatus === 'not_owned').length;
         result.textContent = publishable.length
-          ? `自动同步完成：检测 ${publishable.length} 个频道；新增 ${Number(imported.created || 0)} 个，更新 ${Number(imported.updated || 0)} 个，跳过 ${Number(imported.skipped || 0)} 个。`
-          : '自动同步完成：当前账号没有检测到可发布频道。';
+          ? `自动同步完成：可发布 ${publishable.length} 个频道${excluded ? `，已识别并排除 ${excluded} 个非频道主频道` : ''}；新增 ${Number(imported.created || 0)} 个，更新 ${Number(imported.updated || 0)} 个，跳过 ${Number(imported.skipped || 0)} 个。`
+          : (excluded ? `自动同步完成：已识别 ${excluded} 个非频道主频道，当前没有自己的可发布频道。` : '自动同步完成：当前账号没有检测到可发布频道。');
       }
       return { instanceId, detected: publishable.length, ...imported };
     } catch (error) {
