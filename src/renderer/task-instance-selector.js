@@ -3,6 +3,7 @@
   const qsa = selector => [...document.querySelectorAll(selector)];
   let targetGroups = [];
   const expandedInstances = new Set();
+  const CHANNEL_FILTER_STORAGE_KEY = 'qqChannel.taskChannelFilter.v1';
 
   const escapeHtmlLocal = (value = '') => String(value).replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -14,6 +15,38 @@
     const newButton = oldButton.cloneNode(true);
     oldButton.replaceWith(newButton);
     return newButton;
+  }
+
+  function readFilteredChannelKeys() {
+    try {
+      const value = JSON.parse(localStorage.getItem(CHANNEL_FILTER_STORAGE_KEY) || '[]');
+      return new Set(Array.isArray(value) ? value.map(String) : []);
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  function writeFilteredChannelKeys(keys) {
+    try {
+      localStorage.setItem(CHANNEL_FILTER_STORAGE_KEY, JSON.stringify([...keys]));
+    } catch (_) {}
+  }
+
+  function channelFilterKey(instanceId, channel = {}) {
+    const url = String(channel.url || '').trim().toLowerCase();
+    return `${Number(instanceId) || 0}::${url || `id:${Number(channel.id) || 0}`}`;
+  }
+
+  function isChannelFiltered(instanceId, channel) {
+    return readFilteredChannelKeys().has(channelFilterKey(instanceId, channel));
+  }
+
+  function setChannelFiltered(instanceId, channel, filtered) {
+    const keys = readFilteredChannelKeys();
+    const key = channelFilterKey(instanceId, channel);
+    if (filtered) keys.add(key);
+    else keys.delete(key);
+    writeFilteredChannelKeys(keys);
   }
 
   async function loadTargetGroups() {
@@ -61,7 +94,17 @@
     if (button) button.textContent = expandedInstances.has(instanceId) ? '▼' : '▶';
   }
 
-  function renderInstanceTargets() {
+  function currentSelectedChannelIds() {
+    return new Set(qsa('#taskChannelList .task-channel-checkbox:checked').map(input => Number(input.value)));
+  }
+
+  function findChannel(instanceId, channelId) {
+    const group = targetGroups.find(item => Number(item.instance.id) === Number(instanceId));
+    if (!group) return null;
+    return group.channels.find(channel => Number(channel.id) === Number(channelId)) || null;
+  }
+
+  function renderInstanceTargets(selectedIds = new Set()) {
     const host = qs('#taskChannelList');
     if (!host) return;
     if (!targetGroups.length) {
@@ -70,33 +113,55 @@
       return;
     }
 
-    host.innerHTML = targetGroups.map(group => {
+    const totalFiltered = targetGroups.reduce((sum, group) => {
       const instanceId = Number(group.instance.id);
-      const disabled = group.channels.length === 0;
+      return sum + group.channels.filter(channel => isChannelFiltered(instanceId, channel)).length;
+    }, 0);
+
+    const filterHint = `<div class="hint" style="padding:8px 10px;margin-bottom:8px">新建任务默认隐藏已过滤频道。加入别人的频道可点“过滤”；${totalFiltered ? `当前已过滤 ${totalFiltered} 个频道，可在实例展开后恢复。` : '过滤设置会保存在本机。'}</div>`;
+
+    host.innerHTML = filterHint + targetGroups.map(group => {
+      const instanceId = Number(group.instance.id);
+      const visibleChannels = group.channels.filter(channel => !isChannelFiltered(instanceId, channel));
+      const filteredChannels = group.channels.filter(channel => isChannelFiltered(instanceId, channel));
+      const disabled = visibleChannels.length === 0;
       const expanded = expandedInstances.has(instanceId);
-      const preview = group.channels.length
-        ? group.channels.slice(0, 4).map(channel => escapeHtmlLocal(channel.name)).join('、') + (group.channels.length > 4 ? ` 等 ${group.channels.length} 个频道` : '')
-        : '该实例暂未同步到频道';
-      const channelsHtml = group.channels.map(channel => `
-        <label class="task-channel-row">
-          <input type="checkbox" class="task-channel-checkbox" data-instance-id="${instanceId}" value="${Number(channel.id)}">
-          <span>${escapeHtmlLocal(channel.name)}</span>
-          <small>单独创建 1 条任务</small>
-        </label>`).join('');
+      const preview = visibleChannels.length
+        ? visibleChannels.slice(0, 4).map(channel => escapeHtmlLocal(channel.name)).join('、') + (visibleChannels.length > 4 ? ` 等 ${visibleChannels.length} 个频道` : '')
+        : (filteredChannels.length ? '可发布频道已全部过滤' : '该实例暂未同步到频道');
+      const channelsHtml = visibleChannels.map(channel => `
+        <div class="task-channel-row" style="display:flex;align-items:center;gap:8px">
+          <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer">
+            <input type="checkbox" class="task-channel-checkbox" data-instance-id="${instanceId}" value="${Number(channel.id)}" ${selectedIds.has(Number(channel.id)) ? 'checked' : ''}>
+            <span>${escapeHtmlLocal(channel.name)}</span>
+            <small>单独创建 1 条任务</small>
+          </label>
+          <button type="button" class="task-channel-filter" data-instance-id="${instanceId}" data-channel-id="${Number(channel.id)}" style="flex:0 0 auto">过滤</button>
+        </div>`).join('');
+      const filteredHtml = filteredChannels.length ? `
+        <div style="margin:8px 10px 4px 34px;padding-top:8px;border-top:1px dashed #dbe3ec">
+          <div class="hint" style="padding:0 0 6px">已过滤 ${filteredChannels.length} 个频道：</div>
+          ${filteredChannels.map(channel => `
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+              <span style="flex:1;color:#94a3b8">${escapeHtmlLocal(channel.name)}</span>
+              <button type="button" class="task-channel-restore" data-instance-id="${instanceId}" data-channel-id="${Number(channel.id)}">恢复</button>
+            </div>`).join('')}
+        </div>` : '';
 
       return `
         <div class="instance-target-group" data-instance-id="${instanceId}">
           <div class="task-instance-row">
             <input type="checkbox" class="task-instance-checkbox" value="${instanceId}" ${disabled ? 'disabled' : ''}>
-            <button type="button" class="task-instance-expand" data-instance-id="${instanceId}" ${disabled ? 'disabled' : ''}>${expanded ? '▼' : '▶'}</button>
+            <button type="button" class="task-instance-expand" data-instance-id="${instanceId}" ${group.channels.length ? '' : 'disabled'}>${expanded ? '▼' : '▶'}</button>
             <div class="task-instance-expand-area" data-instance-id="${instanceId}">
               <strong>${escapeHtmlLocal(group.instance.name)}</strong>
               <small>${preview}</small>
             </div>
-            <span class="task-instance-count">${group.channels.length} 个频道</span>
+            <span class="task-instance-count">${visibleChannels.length} 个可发布${filteredChannels.length ? ` · ${filteredChannels.length} 个已过滤` : ''}</span>
           </div>
           <div class="task-instance-channels" data-instance-id="${instanceId}" style="display:${expanded ? 'block' : 'none'}">
-            ${channelsHtml || '<div class="hint" style="padding:8px 34px">暂无频道</div>'}
+            ${channelsHtml || '<div class="hint" style="padding:8px 34px">暂无可发布频道</div>'}
+            ${filteredHtml}
           </div>
         </div>`;
     }).join('');
@@ -113,6 +178,27 @@
     }));
     qsa('#taskChannelList .task-instance-expand').forEach(button => button.addEventListener('click', () => toggleInstance(Number(button.dataset.instanceId))));
     qsa('#taskChannelList .task-instance-expand-area').forEach(area => area.addEventListener('click', () => toggleInstance(Number(area.dataset.instanceId))));
+    qsa('#taskChannelList .task-channel-filter').forEach(button => button.addEventListener('click', () => {
+      const instanceId = Number(button.dataset.instanceId);
+      const channelId = Number(button.dataset.channelId);
+      const channel = findChannel(instanceId, channelId);
+      if (!channel) return;
+      const keepSelected = currentSelectedChannelIds();
+      keepSelected.delete(channelId);
+      setChannelFiltered(instanceId, channel, true);
+      expandedInstances.add(instanceId);
+      renderInstanceTargets(keepSelected);
+    }));
+    qsa('#taskChannelList .task-channel-restore').forEach(button => button.addEventListener('click', () => {
+      const instanceId = Number(button.dataset.instanceId);
+      const channelId = Number(button.dataset.channelId);
+      const channel = findChannel(instanceId, channelId);
+      if (!channel) return;
+      const keepSelected = currentSelectedChannelIds();
+      setChannelFiltered(instanceId, channel, false);
+      expandedInstances.add(instanceId);
+      renderInstanceTargets(keepSelected);
+    }));
 
     for (const group of targetGroups) syncInstanceCheckbox(Number(group.instance.id));
     updateSummary();
