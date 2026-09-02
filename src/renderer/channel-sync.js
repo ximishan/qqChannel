@@ -57,9 +57,7 @@
       button.click();
       return;
     }
-    if (typeof window.loadChannels === 'function') {
-      await window.loadChannels();
-    }
+    if (typeof window.loadChannels === 'function') await window.loadChannels();
   }
 
   async function publishingBusy(instanceId) {
@@ -84,12 +82,9 @@
     const now = Date.now();
     if (!force && now - lastSyncAt < 5000) return null;
 
-    // 只有固定实例窗口允许执行频道同步。隐藏协调窗口绝不碰 QQ 页面，
-    // 否则会和实例窗口重复同步，甚至在发布过程中抢同一个浏览器页面。
-    const fixedInstanceId = Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0);
-    if (!fixedInstanceId) return null;
+    const instanceId = Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0);
+    if (!instanceId) return null;
 
-    const instanceId = fixedInstanceId;
     if (await publishingBusy(instanceId)) {
       const result = document.querySelector('#qqChannelSyncResult');
       if (result && !silent) {
@@ -157,7 +152,6 @@
   }
 
   function mountSyncUi() {
-    // 协调窗口只负责创建/打开实例，不允许自动同步频道。
     if (!Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0)) return;
 
     const panel = document.querySelector('#channels');
@@ -183,9 +177,6 @@
     `;
     panel.insertBefore(card, split);
 
-    const manualCard = split.querySelector('.card:first-child');
-    if (manualCard) manualCard.style.display = 'none';
-
     document.querySelector('#btnSyncQQChannels')?.addEventListener('click', () => {
       syncRemoteGuilds({ force: true }).catch(error => console.error(error));
     });
@@ -209,7 +200,6 @@
       if (loggedIn) syncRemoteGuilds({ silent: true }).catch(error => console.error(error));
     });
 
-    // 发布结束后补一次自动同步；发布进行中绝不切换频道页面。
     window.api.onPublishUpdate?.(data => {
       if (Number(data?.instanceId || 0) !== Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0)) return;
       if (data?.type === 'task-finished') deferSync(1200);
