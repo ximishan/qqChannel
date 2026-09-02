@@ -14,6 +14,13 @@ module.exports = function installTaskPageLifecycleSupport(BrowserManager) {
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+  function lifecycleMap(manager) {
+    if (!(manager.__qqchannelTaskPageLifecycles instanceof Map)) {
+      manager.__qqchannelTaskPageLifecycles = new Map();
+    }
+    return manager.__qqchannelTaskPageLifecycles;
+  }
+
   proto.createTaskPublishPage = async function createTaskPublishPage(instanceId) {
     const id = this.normalizeInstanceId(instanceId);
     const originalRecord = await this.getOrCreateView(id);
@@ -88,13 +95,13 @@ module.exports = function installTaskPageLifecycleSupport(BrowserManager) {
     } catch (_) {}
   };
 
-  // 发布任务运行期间，navigate 只操作本任务创建的临时 QQ 页面。
+  // 发布任务运行期间，navigate 只操作该实例当前任务创建的临时 QQ 页面。
   // 对同一个 URL 不再等待 did-stop-loading；油猴 DOM 自己会等待目标元素出现，
   // 因此页面 DOM 一可用就可以继续，不必等 QQ 的全部资源加载完。
   proto.navigate = async function navigateTaskPageAware(instanceId, url = 'https://pd.qq.com/') {
     const id = this.normalizeInstanceId(instanceId);
-    const active = this.__qqchannelTaskPageLifecycle;
-    if (!active || active.id !== id || !active.record?.temporaryPublishPage) {
+    const active = lifecycleMap(this).get(id);
+    if (!active || !active.record?.temporaryPublishPage) {
       return previousNavigate.call(this, id, url);
     }
 
@@ -138,11 +145,12 @@ module.exports = function installTaskPageLifecycleSupport(BrowserManager) {
     const id = this.normalizeInstanceId(task.instance_id);
     const lifecycle = await this.createTaskPublishPage(id);
     const previousMapRecord = this.views.get(id);
+    const lifecycles = lifecycleMap(this);
 
     // 让现有 publishTask / 油猴 DOM / 评论链透明地拿到临时页面。
     // 这里只替换页面容器，不重写任何发布算法。
     this.views.set(id, lifecycle.record);
-    this.__qqchannelTaskPageLifecycle = lifecycle;
+    lifecycles.set(id, lifecycle);
 
     const firstTarget = Array.isArray(task.targets)
       ? task.targets.find(target => target.status !== 'success' && target.channel_url)
@@ -157,8 +165,8 @@ module.exports = function installTaskPageLifecycleSupport(BrowserManager) {
       }
       return await previousPublishTask.call(this, task);
     } finally {
-      if (this.__qqchannelTaskPageLifecycle === lifecycle) {
-        this.__qqchannelTaskPageLifecycle = null;
+      if (lifecycles.get(id) === lifecycle) {
+        lifecycles.delete(id);
       }
 
       if (this.views.get(id) === lifecycle.record) {
