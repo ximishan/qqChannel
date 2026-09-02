@@ -22,7 +22,4 @@ require('./login-state-fix-support')(DB, BrowserManager);
 require('./login-qr-support')(BrowserManager);
 // QQ 当前激活频道可能不再使用 .my-guild-item；同步时额外合并当前 /g/... 页面频道。
 require('./channel-current-page-sync-support')(BrowserManager);
-// 每条发布任务使用一个全新的临时 QQ 页面：共享实例登录 session，任务完成后立即销毁页面。
-// 不修改油猴发布算法，只管理页面的创建、导航与关闭生命周期。
-require('./task-page-lifecycle-support')(BrowserManager);
 require('./main');
