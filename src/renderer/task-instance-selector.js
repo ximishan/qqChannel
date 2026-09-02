@@ -22,9 +22,9 @@
       const channels = await window.api.listChannels(Number(instance.id));
       return {
         instance,
-        // 只有接口已经明确判定为“不是当前账号频道主”的频道才过滤。
-        // unknown 继续保留，避免 owners 接口临时不可用时误伤自己的频道。
-        channels: (channels || []).filter(channel => String(channel.ownership_status || 'unknown') !== 'not_owned')
+        // 新建任务只允许选择已经明确确认属于当前账号的频道。
+        // not_owned 和 unknown 都不进入任务列表，避免误发到别人频道。
+        channels: (channels || []).filter(channel => String(channel.ownership_status || 'unknown') === 'owned')
       };
     }));
   }
@@ -81,7 +81,7 @@
       const expanded = expandedInstances.has(instanceId);
       const preview = group.channels.length
         ? group.channels.slice(0, 4).map(channel => escapeHtmlLocal(channel.name)).join('、') + (group.channels.length > 4 ? ` 等 ${group.channels.length} 个频道` : '')
-        : '该实例暂未同步到可发布频道';
+        : '暂无已确认属于当前账号的可发布频道';
       const channelsHtml = group.channels.map(channel => `
         <label class="task-channel-row">
           <input type="checkbox" class="task-channel-checkbox" data-instance-id="${instanceId}" value="${Number(channel.id)}">
@@ -101,7 +101,7 @@
             <span class="task-instance-count">${group.channels.length} 个频道</span>
           </div>
           <div class="task-instance-channels" data-instance-id="${instanceId}" style="display:${expanded ? 'block' : 'none'}">
-            ${channelsHtml || '<div class="hint" style="padding:8px 34px">暂无可发布频道</div>'}
+            ${channelsHtml || '<div class="hint" style="padding:8px 34px">暂无已确认属于当前账号的可发布频道，请先到频道管理重新同步</div>'}
           </div>
         </div>`;
     }).join('');
