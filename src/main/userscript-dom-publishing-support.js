@@ -3,7 +3,6 @@ const path = require('path');
 
 module.exports = function installUserscriptDomPublishingSupport(DB, BrowserManager) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const previous = BrowserManager.prototype.publishOneTarget;
   const S = {
     box: '.publish-editor-container', area: '.publish-editor-container .editor-area',
     header: '.publish-editor-container .editor-header', edit: '.publish-editor-container .ProseMirror',
@@ -81,7 +80,9 @@ module.exports = function installUserscriptDomPublishingSupport(DB, BrowserManag
 
   BrowserManager.prototype.publishOneTarget = async function(record, task, target, selectors, attempt) {
     const wc = record.view.webContents, comment = norm(task.comment), already = Number(target.post_published || 0) === 1;
-    if (already && !this.qqcFeedId(target.post_url)) return previous.call(this, record, task, target, selectors, attempt);
+    if (already && !this.qqcFeedId(target.post_url)) {
+      throw noRetry('该目标已标记为帖子已发布，但没有油猴流程可识别的 /post/B_xxx 详情链接；为避免重复发帖，不再回退旧发布器');
+    }
     try {
       this.db.setTargetStatus(target.id, 'running');
       this.notifyPublishUpdate({ type:'target-started', instanceId:task.instance_id, taskId:task.id, channelName:target.channel_name, attempt });
