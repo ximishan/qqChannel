@@ -25,7 +25,7 @@
 
     const hint = document.createElement('div');
     hint.className = 'field-hint';
-    hint.textContent = '保存后，新建发布任务和批量视频任务时会自动填入评论区，可在单个任务中临时修改。';
+    hint.textContent = '保存后，新建发布任务会自动填入评论区；视频目录批量模式同样使用这个默认值。';
 
     wrapper.append(label, textarea, hint);
     card.insertBefore(wrapper, saveButton);
@@ -67,20 +67,7 @@
     if (body) body.value = savedDefaultComment;
   });
 
-  $('#btnBatchVideo')?.addEventListener('click', () => {
-    const body = $('#batchBody');
-    if (body) body.value = savedDefaultComment;
-  });
-
   document.querySelector('.tab[data-tab="settings"]')?.addEventListener('click', () => {
     loadDefaultComment();
   });
-
-  // 多实例窗口脚本放在最后加载，确保它可以覆盖/约束前面已经注册的实例选择与任务弹窗行为。
-  if (!document.querySelector('script[data-instance-window-ui]')) {
-    const script = document.createElement('script');
-    script.src = 'instance-window-ui.js';
-    script.dataset.instanceWindowUi = '1';
-    document.body.appendChild(script);
-  }
 })();
