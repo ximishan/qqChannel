@@ -27,12 +27,20 @@
       .qq-remote-name{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .qq-remote-number{color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .qq-role{display:inline-flex;width:max-content;padding:3px 8px;border-radius:999px;font-size:12px;background:#edf9f2;color:#17a663}
-      .qq-role.joined{background:#f1f5f9;color:#7d8b9b}
+      .qq-role.joined,.qq-role.unknown{background:#f1f5f9;color:#7d8b9b}
+      .qq-role.not-owned{background:#fff1f1;color:#e55252}
       .qq-remote-row.disabled{opacity:.68;background:#fafbfc}
       #qqChannelSyncResult{margin-top:10px;white-space:pre-wrap}
       @media(max-width:1050px){.qq-remote-row{grid-template-columns:minmax(160px,1fr) 100px}.qq-remote-number{display:none}}
     `;
     document.head.appendChild(style);
+  }
+
+  function roleClass(item) {
+    if (item.ownershipStatus === 'not_owned') return 'not-owned';
+    if (item.ownershipStatus === 'unknown') return 'unknown';
+    if (item.source === 'joined') return 'joined';
+    return '';
   }
 
   function renderRemoteGuilds() {
@@ -46,7 +54,7 @@
       <div class="qq-remote-row ${item.selectable ? '' : 'disabled'}">
         <span class="qq-remote-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
         <span class="qq-remote-number">${escapeHtml(item.guildNumber || '无频道号')}</span>
-        <span class="qq-role ${item.source === 'joined' ? 'joined' : ''}">${escapeHtml(item.sourceLabel || '当前实例')}</span>
+        <span class="qq-role ${roleClass(item)}">${escapeHtml(item.sourceLabel || '归属未确认')}</span>
       </div>
     `).join('');
   }
@@ -126,16 +134,24 @@
             ownerTinyId: item.ownerTinyId
           }))
         });
-        await refreshLocalChannelList();
       }
+
+      // collectChannels 在归属明确时会同步更新本地 enabled 状态。
+      // 即使本轮没有任何可导入频道，也必须刷新下面列表，让非频道主频道立即消失。
+      await refreshLocalChannelList();
 
       lastSyncAt = Date.now();
       if (result) {
         result.style.color = '#17a663';
         const excluded = remoteGuilds.filter(item => item.ownershipStatus === 'not_owned').length;
+        const unknown = remoteGuilds.filter(item => item.ownershipStatus === 'unknown').length;
+        const suffix = [
+          excluded ? `排除 ${excluded} 个非频道主频道` : '',
+          unknown ? `${unknown} 个归属未确认（未导入）` : ''
+        ].filter(Boolean).join('，');
         result.textContent = publishable.length
-          ? `自动同步完成：可发布 ${publishable.length} 个频道${excluded ? `，已识别并排除 ${excluded} 个非频道主频道` : ''}；新增 ${Number(imported.created || 0)} 个，更新 ${Number(imported.updated || 0)} 个，跳过 ${Number(imported.skipped || 0)} 个。`
-          : (excluded ? `自动同步完成：已识别 ${excluded} 个非频道主频道，当前没有自己的可发布频道。` : '自动同步完成：当前账号没有检测到可发布频道。');
+          ? `自动同步完成：可发布 ${publishable.length} 个频道${suffix ? `，${suffix}` : ''}；新增 ${Number(imported.created || 0)} 个，更新 ${Number(imported.updated || 0)} 个，跳过 ${Number(imported.skipped || 0)} 个。`
+          : `自动同步完成：当前没有确认属于自己的可发布频道${suffix ? `；${suffix}` : ''}。`;
       }
       return { instanceId, detected: publishable.length, ...imported };
     } catch (error) {
@@ -169,7 +185,7 @@
       <div class="sync-head">
         <div>
           <h3>QQ 频道自动同步</h3>
-          <div class="sync-note">当前实例登录成功后会自动读取该 QQ 账号的频道，并直接新增或更新到本地频道管理，无需手动勾选或导入。</div>
+          <div class="sync-note">当前实例登录成功后会自动读取该 QQ 账号的频道，并只把确认属于当前账号的频道同步到本地频道管理。</div>
         </div>
         <div class="sync-actions">
           <button type="button" id="btnSyncQQChannels">重新同步</button>
