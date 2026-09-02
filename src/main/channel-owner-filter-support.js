@@ -1,269 +1,278 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { spawn } = require('child_process');
-
-let cliQueue = Promise.resolve();
-
 function text(value) {
   return String(value == null ? '' : value).trim();
 }
 
-function exists(target) {
-  try { return fs.existsSync(target); } catch (_) { return false; }
+function normalizedName(value) {
+  return text(value).replace(/\s+/g, '').toLowerCase();
 }
 
-function remove(target) {
-  try { fs.rmSync(target, { recursive: true, force: true }); } catch (_) {}
-}
-
-function copyDir(source, target) {
-  if (!exists(source)) return;
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.cpSync(source, target, { recursive: true, force: true });
-}
-
-function parseLastJson(output) {
-  const lines = String(output || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try { return JSON.parse(lines[index]); } catch (_) {}
+function parseJsonBody(body) {
+  const raw = text(body);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (_) {}
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(raw.slice(start, end + 1)); } catch (_) {}
   }
   return null;
 }
 
-function findCli() {
-  const platformPackage = process.platform === 'win32'
-    ? 'tencent-channel-cli-win32-x64'
-    : `tencent-channel-cli-${process.platform}-${process.arch}`;
-  const executable = process.platform === 'win32' ? 'tencent-channel-cli.exe' : 'tencent-channel-cli';
-  const candidates = [process.env.TENCENT_CHANNEL_CLI];
-
-  try {
-    const packageJson = require.resolve(`${platformPackage}/package.json`);
-    candidates.push(path.join(path.dirname(packageJson), 'bin', executable));
-  } catch (_) {}
-
-  const projectRoot = path.resolve(__dirname, '..', '..');
-  candidates.push(
-    path.join(projectRoot, 'node_modules', platformPackage, 'bin', executable),
-    path.join(projectRoot, 'node_modules', 'tencent-channel-cli', 'node_modules', platformPackage, 'bin', executable)
-  );
-
-  if (process.resourcesPath) {
-    const unpacked = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules');
-    candidates.push(
-      path.join(unpacked, platformPackage, 'bin', executable),
-      path.join(unpacked, 'tencent-channel-cli', 'node_modules', platformPackage, 'bin', executable)
-    );
+function walkObjects(value, visit, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 8) return;
+  visit(value);
+  if (Array.isArray(value)) {
+    for (const item of value) walkObjects(item, visit, depth + 1);
+    return;
   }
-
-  if (process.env.APPDATA) {
-    candidates.push(
-      path.join(process.env.APPDATA, 'npm', 'node_modules', 'tencent-channel-cli', 'node_modules', platformPackage, 'bin', executable),
-      path.join(process.env.APPDATA, 'npm', 'tencent-channel-cli.cmd')
-    );
-  }
-
-  for (const directory of String(process.env.PATH || '').split(path.delimiter)) {
-    if (!directory) continue;
-    candidates.push(path.join(directory, process.platform === 'win32' ? 'tencent-channel-cli.cmd' : 'tencent-channel-cli'));
-    candidates.push(path.join(directory, executable));
-  }
-
-  return [...new Set(candidates.filter(Boolean).map(candidate => {
-    const normalized = path.normalize(candidate);
-    return normalized.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
-  }))].find(candidate => {
-    try { return fs.statSync(candidate).isFile(); } catch (_) { return false; }
-  }) || '';
-}
-
-function instanceAccountCandidates(manager, instanceId) {
-  const id = Number(instanceId);
-  const row = manager.db?.db?.prepare?.('SELECT * FROM instances WHERE id=?')?.get(id) || null;
-  const legacyAccountId = Number(row?.account_id || 0);
-  const ids = [...new Set([legacyAccountId, id].filter(value => Number.isInteger(value) && value > 0))];
-  return ids.map(accountId => path.join(manager.userDataPath, 'qq-accounts', String(accountId)));
-}
-
-function findIsolatedCliHome(manager, instanceId) {
-  return instanceAccountCandidates(manager, instanceId).find(home => exists(path.join(home, '.qqcli'))) || '';
-}
-
-function cliEnvironment(home) {
-  const env = { ...process.env };
-  const appData = path.join(home, 'AppData', 'Roaming');
-  const localAppData = path.join(home, 'AppData', 'Local');
-  const xdgConfig = path.join(home, '.config');
-  const xdgData = path.join(home, '.local', 'share');
-  for (const directory of [home, appData, localAppData, xdgConfig, xdgData]) fs.mkdirSync(directory, { recursive: true });
-  env.HOME = home;
-  env.USERPROFILE = home;
-  env.APPDATA = appData;
-  env.LOCALAPPDATA = localAppData;
-  env.XDG_CONFIG_HOME = xdgConfig;
-  env.XDG_DATA_HOME = xdgData;
-  env.QQCLI_HOME = home;
-  env.QQCLI_CONFIG_DIR = path.join(home, '.qqcli');
-  env.TENCENT_CHANNEL_CLI_HOME = home;
-  delete env.QQCLI_TOKEN;
-  delete env.QQ_CHANNEL_TOKEN;
-  delete env.TENCENT_CHANNEL_TOKEN;
-  return env;
-}
-
-function executeCli(cliPath, home, args, payload = null, timeoutMs = 30000) {
-  return new Promise((resolve, reject) => {
-    let command = cliPath;
-    let commandArgs = args;
-    if (process.platform === 'win32' && /\.cmd$/i.test(cliPath)) {
-      command = process.env.ComSpec || 'cmd.exe';
-      commandArgs = ['/d', '/s', '/c', [`"${cliPath}"`, ...args].join(' ')];
-    }
-    const child = spawn(command, commandArgs, {
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: cliEnvironment(home),
-      cwd: home
-    });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch (_) {}
-      reject(new Error(`频道归属接口执行超时（${Math.round(timeoutMs / 1000)}秒）`));
-    }, timeoutMs);
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr += chunk; });
-    child.on('error', error => { clearTimeout(timer); reject(error); });
-    child.on('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
-    if (payload == null) child.stdin.end();
-    else child.stdin.end(JSON.stringify(payload));
-  });
-}
-
-async function runCliIsolated(manager, instanceId, args, payload = null, timeoutMs = 30000) {
-  const home = findIsolatedCliHome(manager, instanceId);
-  if (!home) return { available: false, reason: '当前实例没有旧版频道接口授权缓存' };
-  const cliPath = findCli();
-  if (!cliPath) return { available: false, reason: '未找到 tencent-channel-cli' };
-
-  const work = async () => {
-    const accountQqcli = path.join(home, '.qqcli');
-    const realQqcli = path.join(os.homedir(), '.qqcli');
-    const backupQqcli = path.join(os.homedir(), `.qqcli.qqchannel-owner-backup-${process.pid}`);
-
-    if (exists(backupQqcli)) {
-      remove(realQqcli);
-      try { fs.renameSync(backupQqcli, realQqcli); } catch (_) { copyDir(backupQqcli, realQqcli); remove(backupQqcli); }
-    }
-
-    const hadGlobal = exists(realQqcli);
-    if (hadGlobal) {
-      try { fs.renameSync(realQqcli, backupQqcli); }
-      catch (_) { copyDir(realQqcli, backupQqcli); remove(realQqcli); }
-    }
-
-    remove(realQqcli);
-    copyDir(accountQqcli, realQqcli);
-
-    try {
-      const completed = await executeCli(cliPath, home, args, payload, timeoutMs);
-      const response = parseLastJson(completed.stdout);
-      if (completed.code === 0 && response?.success) return { available: true, data: response.data || {} };
-      const detail = text(response?.message || response?.error?.message || response?.error || completed.stderr || completed.stdout);
-      return { available: false, reason: detail || `接口退出码 ${completed.code}` };
-    } finally {
-      remove(accountQqcli);
-      if (exists(realQqcli)) copyDir(realQqcli, accountQqcli);
-      remove(realQqcli);
-      if (hadGlobal && exists(backupQqcli)) {
-        try { fs.renameSync(backupQqcli, realQqcli); }
-        catch (_) { copyDir(backupQqcli, realQqcli); remove(backupQqcli); }
-      } else {
-        remove(backupQqcli);
-      }
-    }
-  };
-
-  const queued = cliQueue.then(work, work);
-  cliQueue = queued.catch(() => {});
-  return queued;
+  for (const child of Object.values(value)) walkObjects(child, visit, depth + 1);
 }
 
 function normalizeGuild(item = {}, source = '') {
   return {
-    guildId: text(item.guild_id ?? item.guildId),
-    guildNumber: text(item.guild_number ?? item.guildNumber),
+    guildId: text(item.guild_id ?? item.guildId ?? item.id),
+    guildNumber: text(item.guild_number ?? item.guildNumber ?? item.number),
     name: text(item.name ?? item.guild_name ?? item.guildName),
     source
   };
 }
 
-function ownerTinyId(member = {}) {
+function normalizeOwner(member = {}) {
   const user = member.user && typeof member.user === 'object' ? member.user : member;
-  return text(user.tiny_id ?? user.tinyId ?? user.user_id ?? user.userId ?? member.tiny_id ?? member.tinyId);
+  return {
+    tinyId: text(
+      user.tinyid ?? user.tiny_id ?? user.tinyId ?? user.user_id ?? user.userId ??
+      member.tinyid ?? member.tiny_id ?? member.tinyId
+    ),
+    nickname: text(
+      user['昵称'] ?? user.nickname ?? user.nick ?? user.name ??
+      member['昵称'] ?? member.nickname ?? member.nick ?? member.name
+    )
+  };
 }
 
-async function firstCreatedGuildOwner(manager, instanceId, createdGuilds) {
-  for (const guild of createdGuilds) {
-    if (!guild.guildId) continue;
-    let nextPageToken = '';
-    for (let page = 0; page < 20; page += 1) {
-      const payload = { guild_id: guild.guildId };
-      if (nextPageToken) payload.next_page_token = nextPageToken;
-      const response = await runCliIsolated(manager, instanceId, ['manage', 'get-guild-member-list', '--json'], payload, 30000);
-      if (!response.available) break;
-      const owners = Array.isArray(response.data?.owners) ? response.data.owners : [];
-      const tinyId = owners.map(ownerTinyId).find(Boolean);
-      if (tinyId) return { tinyId, guild };
-      nextPageToken = text(response.data?.next_page_token ?? response.data?.nextPageToken);
-      if (!nextPageToken) break;
+function extractGuildIdFromRequest(meta = {}) {
+  const url = text(meta.url);
+  try {
+    const parsed = new URL(url);
+    for (const key of ['guild_id', 'guildId', 'guildid']) {
+      const value = text(parsed.searchParams.get(key));
+      if (value) return value;
+    }
+  } catch (_) {}
+
+  const postData = text(meta.postData);
+  if (!postData) return '';
+  try {
+    const payload = JSON.parse(postData);
+    const direct = text(payload.guild_id ?? payload.guildId ?? payload.guildid);
+    if (direct) return direct;
+    let found = '';
+    walkObjects(payload, object => {
+      if (found || Array.isArray(object)) return;
+      found = text(object.guild_id ?? object.guildId ?? object.guildid);
+    });
+    if (found) return found;
+  } catch (_) {}
+
+  const match = postData.match(/(?:guild_id|guildId|guildid)(?:%22|"|')?\s*(?:=|%3A|:)\s*(?:%22|"|')?([A-Za-z0-9_-]+)/i);
+  return text(match?.[1]);
+}
+
+function createApiSnapshot() {
+  return {
+    grouped: null,
+    groupedScore: -1,
+    ownersByGuildId: new Map(),
+    ownersResponseCount: 0,
+    responseUrls: new Set()
+  };
+}
+
+function absorbGroupedGuilds(snapshot, object) {
+  if (!object || typeof object !== 'object' || Array.isArray(object)) return;
+  const createdRaw = object.created_guilds ?? object.createdGuilds;
+  const managedRaw = object.managed_guilds ?? object.managedGuilds;
+  const joinedRaw = object.joined_guilds ?? object.joinedGuilds;
+  if (!Array.isArray(createdRaw) && !Array.isArray(managedRaw) && !Array.isArray(joinedRaw)) return;
+
+  const created = (Array.isArray(createdRaw) ? createdRaw : []).map(item => normalizeGuild(item, 'created')).filter(item => item.guildId || item.guildNumber || item.name);
+  const managed = (Array.isArray(managedRaw) ? managedRaw : []).map(item => normalizeGuild(item, 'managed')).filter(item => item.guildId || item.guildNumber || item.name);
+  const joined = (Array.isArray(joinedRaw) ? joinedRaw : []).map(item => normalizeGuild(item, 'joined')).filter(item => item.guildId || item.guildNumber || item.name);
+  const score = created.length + managed.length + joined.length;
+  if (score < snapshot.groupedScore) return;
+  snapshot.groupedScore = score;
+  snapshot.grouped = { created, managed, joined };
+}
+
+function absorbOwnerResponse(snapshot, object, requestMeta) {
+  if (!object || typeof object !== 'object' || Array.isArray(object)) return;
+  const owners = object.owners;
+  if (!Array.isArray(owners)) return;
+
+  const guildId = text(
+    object.guild_id ?? object.guildId ??
+    object.guild?.guild_id ?? object.guild?.guildId ??
+    extractGuildIdFromRequest(requestMeta)
+  );
+  if (!guildId) return;
+
+  const normalizedOwners = owners.map(normalizeOwner).filter(owner => owner.tinyId || owner.nickname);
+  snapshot.ownersResponseCount += 1;
+  snapshot.ownersByGuildId.set(guildId, normalizedOwners);
+}
+
+function absorbApiBody(snapshot, data, requestMeta) {
+  walkObjects(data, object => {
+    absorbGroupedGuilds(snapshot, object);
+    absorbOwnerResponse(snapshot, object, requestMeta);
+  });
+}
+
+async function captureBrowserApi(manager, instanceId, work) {
+  const id = manager.normalizeInstanceId(instanceId);
+  const record = await manager.getOrCreateView(id);
+  const webContents = record.view.webContents;
+  const api = snapshot => snapshot;
+  const snapshot = createApiSnapshot();
+  const requestMeta = new Map();
+  const xhrRequestIds = new Set();
+  const pendingBodies = new Set();
+  let attachedHere = false;
+
+  try {
+    if (!webContents.debugger.isAttached()) {
+      webContents.debugger.attach('1.3');
+      attachedHere = true;
+    }
+    await webContents.debugger.sendCommand('Network.enable').catch(() => {});
+    await webContents.debugger.sendCommand('Network.setCacheDisabled', { cacheDisabled: true }).catch(() => {});
+  } catch (error) {
+    manager.db.log('warn', `实例 #${id} 无法监听频道接口：${String(error?.message || error)}`);
+    return { rows: await work(), snapshot };
+  }
+
+  const onMessage = (_event, method, params = {}) => {
+    if (method === 'Network.requestWillBeSent') {
+      const request = params.request || {};
+      requestMeta.set(params.requestId, {
+        url: text(request.url),
+        postData: text(request.postData)
+      });
+      return;
+    }
+
+    if (method === 'Network.responseReceived') {
+      const type = text(params.type);
+      const url = text(params.response?.url);
+      if (!['XHR', 'Fetch'].includes(type)) return;
+      if (!/qq\.com|gtimg\.cn|myqcloud\.com/i.test(url)) return;
+      xhrRequestIds.add(params.requestId);
+      if (url) snapshot.responseUrls.add(url);
+      return;
+    }
+
+    if (method !== 'Network.loadingFinished' || !xhrRequestIds.has(params.requestId)) return;
+    xhrRequestIds.delete(params.requestId);
+    const requestId = params.requestId;
+    const task = webContents.debugger.sendCommand('Network.getResponseBody', { requestId })
+      .then(result => {
+        const parsed = parseJsonBody(result?.body);
+        if (parsed) absorbApiBody(snapshot, parsed, requestMeta.get(requestId) || {});
+      })
+      .catch(() => {})
+      .finally(() => pendingBodies.delete(task));
+    pendingBodies.add(task);
+  };
+
+  webContents.debugger.on('message', onMessage);
+  try {
+    // 频道首页刷新会重新调用“我的频道”列表接口；随后原同步流程逐个打开频道，
+    // 可以继续捕获频道详情/成员接口中的 owners。
+    if (!String(webContents.getURL() || '').startsWith('https://pd.qq.com/')) {
+      await manager.navigate(id, 'https://pd.qq.com/');
+    }
+    await new Promise(resolve => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, 8000);
+      webContents.once('did-stop-loading', done);
+      try { webContents.reloadIgnoringCache(); } catch (_) { done(); }
+    });
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    const rows = await work();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await Promise.allSettled([...pendingBodies]);
+    return { rows, snapshot: api(snapshot) };
+  } finally {
+    webContents.debugger.removeListener('message', onMessage);
+    await webContents.debugger.sendCommand('Network.setCacheDisabled', { cacheDisabled: false }).catch(() => {});
+    if (attachedHere && webContents.debugger.isAttached()) {
+      try { webContents.debugger.detach(); } catch (_) {}
     }
   }
-  return null;
 }
 
-async function readOwnership(manager, instanceId) {
-  const login = await runCliIsolated(manager, instanceId, ['login', 'status', '--json'], null, 15000);
-  if (!login.available || !login.data?.valid) {
-    return { available: false, reason: login.reason || '频道接口授权已失效' };
-  }
-
-  const response = await runCliIsolated(manager, instanceId, ['manage', 'get-my-join-guild-info', '--json'], {}, 30000);
-  if (!response.available) return response;
-
-  const created = (response.data?.created_guilds || []).map(item => normalizeGuild(item, 'created'));
-  const managed = (response.data?.managed_guilds || []).map(item => normalizeGuild(item, 'managed'));
-  const joined = (response.data?.joined_guilds || []).map(item => normalizeGuild(item, 'joined'));
-  const owner = await firstCreatedGuildOwner(manager, instanceId, created).catch(() => null);
-
+function buildGroupedMaps(grouped) {
+  const byId = new Map();
   const byNumber = new Map();
   const byName = new Map();
   const add = (guild, status, label) => {
-    const value = {
-      status,
-      label,
-      source: guild.source,
-      guildId: guild.guildId,
-      guildNumber: guild.guildNumber,
-      ownerTinyId: status === 'owned' ? text(owner?.tinyId) : ''
-    };
-    if (guild.guildNumber) byNumber.set(guild.guildNumber.toLowerCase(), value);
-    if (guild.name && !byName.has(guild.name)) byName.set(guild.name, value);
+    const meta = { ...guild, status, label };
+    if (guild.guildId) byId.set(guild.guildId, meta);
+    if (guild.guildNumber) byNumber.set(guild.guildNumber.toLowerCase(), meta);
+    if (guild.name && !byName.has(guild.name)) byName.set(guild.name, meta);
   };
-  created.forEach(guild => add(guild, 'owned', '我创建的'));
-  managed.forEach(guild => add(guild, 'not_owned', '我管理的'));
-  joined.forEach(guild => add(guild, 'not_owned', '普通加入'));
+  for (const guild of grouped?.created || []) add(guild, 'owned', '我创建的');
+  for (const guild of grouped?.managed || []) if (!byId.has(guild.guildId)) add(guild, 'not_owned', '我管理的');
+  for (const guild of grouped?.joined || []) if (!byId.has(guild.guildId)) add(guild, 'not_owned', '普通加入');
+  return { byId, byNumber, byName };
+}
+
+function classifyRow(row, snapshot, loginName) {
+  const loginKey = normalizedName(loginName);
+  const groupId = text(row.groupId || row.guildId);
+  const owners = groupId ? snapshot.ownersByGuildId.get(groupId) : null;
+
+  if (Array.isArray(owners) && owners.length && loginKey) {
+    const me = owners.find(owner => normalizedName(owner.nickname) === loginKey);
+    return {
+      status: me ? 'owned' : 'not_owned',
+      label: me ? '频道主' : '非频道主',
+      source: 'owners',
+      ownerTinyId: text(me?.tinyId),
+      guildId: groupId
+    };
+  }
+
+  const maps = buildGroupedMaps(snapshot.grouped);
+  const guildNumber = text(row.guildNumber || row.url?.match?.(/\/g\/([^/?#]+)/i)?.[1]).toLowerCase();
+  const meta = (groupId && maps.byId.get(groupId)) ||
+    (guildNumber && maps.byNumber.get(guildNumber)) ||
+    maps.byName.get(text(row.name)) || null;
+  if (meta) {
+    return {
+      status: meta.status,
+      label: meta.label,
+      source: 'guild-list',
+      ownerTinyId: '',
+      guildId: meta.guildId || groupId,
+      guildNumber: meta.guildNumber || row.guildNumber
+    };
+  }
 
   return {
-    available: true,
-    byNumber,
-    byName,
-    ownerTinyId: text(owner?.tinyId),
-    ownerVerified: Boolean(owner?.tinyId),
-    counts: { created: created.length, managed: managed.length, joined: joined.length }
+    status: 'unknown',
+    label: '归属未确认',
+    source: 'unknown',
+    ownerTinyId: '',
+    guildId: groupId
   };
 }
 
@@ -276,30 +285,42 @@ module.exports = function installChannelOwnerFilterSupport(DB, BrowserManager) {
     this.ensureColumn('channels', 'ownership_checked_at', 'TEXT');
   };
 
+  // 频道管理和新建任务都只暴露当前仍可发布的频道。
+  DB.prototype.listChannels = function listEnabledChannels(instanceId) {
+    return this.db.prepare('SELECT * FROM channels WHERE instance_id=? AND enabled=1 ORDER BY id ASC').all(Number(instanceId));
+  };
+
   DB.prototype.saveChannelOwnership = function saveChannelOwnership(instanceId, item = {}) {
-    const status = ['owned', 'not_owned'].includes(String(item.status || '')) ? String(item.status) : 'unknown';
+    const status = ['owned', 'not_owned'].includes(text(item.status)) ? text(item.status) : 'unknown';
     if (status === 'unknown') return { changes: 0 };
     const guildNumber = text(item.guildNumber);
+    const guildId = text(item.guildId);
     const url = text(item.url);
+    const enabled = status === 'owned' ? 1 : 0;
     return this.db.prepare(`
       UPDATE channels
-      SET ownership_status=?, owner_tiny_id=?, ownership_checked_at=CURRENT_TIMESTAMP
+      SET ownership_status=?, owner_tiny_id=?, ownership_checked_at=CURRENT_TIMESTAMP, enabled=?
       WHERE instance_id=? AND (
+        (?<>'' AND COALESCE(guild_id,'')=?) OR
         (?<>'' AND COALESCE(guild_number,'')=?) OR
         (?<>'' AND url=?)
       )
-    `).run(status, text(item.ownerTinyId), Number(instanceId), guildNumber, guildNumber, url, url);
+    `).run(
+      status, text(item.ownerTinyId), enabled, Number(instanceId),
+      guildId, guildId, guildNumber, guildNumber, url, url
+    );
   };
 
   const originalImportRemoteChannels = DB.prototype.importRemoteChannels;
   DB.prototype.importRemoteChannels = function importRemoteChannelsWithOwnership(instanceId, channels = []) {
-    const result = originalImportRemoteChannels.call(this, instanceId, channels);
-    for (const item of channels || []) {
-      const status = text(item?.ownershipStatus);
-      if (!['owned', 'not_owned'].includes(status)) continue;
+    const ownedChannels = (channels || []).filter(item => text(item?.ownershipStatus) === 'owned');
+    if (!ownedChannels.length) return { created: 0, updated: 0, skipped: Array.isArray(channels) ? channels.length : 0 };
+    const result = originalImportRemoteChannels.call(this, instanceId, ownedChannels);
+    for (const item of ownedChannels) {
       this.saveChannelOwnership(instanceId, {
-        status,
+        status: 'owned',
         ownerTinyId: item?.ownerTinyId,
+        guildId: item?.guildId,
         guildNumber: item?.guildNumber,
         url: item?.url
       });
@@ -308,45 +329,55 @@ module.exports = function installChannelOwnerFilterSupport(DB, BrowserManager) {
   };
 
   const previousCollectChannels = BrowserManager.prototype.collectChannels;
-  BrowserManager.prototype.collectChannels = async function collectChannelsWithOwnership(instanceId) {
+  BrowserManager.prototype.collectChannels = async function collectChannelsWithBrowserOwnership(instanceId) {
     const id = this.normalizeInstanceId(instanceId);
-    const rows = await previousCollectChannels.call(this, id);
-    const ownership = await readOwnership(this, id).catch(error => ({ available: false, reason: String(error?.message || error) }));
+    const captured = await captureBrowserApi(this, id, () => previousCollectChannels.call(this, id));
+    const row = this.db.db.prepare('SELECT login_name FROM instances WHERE id=?').get(id) || {};
+    const loginName = text(row.login_name);
+    const grouped = captured.snapshot.grouped;
+    const groupedCounts = {
+      created: grouped?.created?.length || 0,
+      managed: grouped?.managed?.length || 0,
+      joined: grouped?.joined?.length || 0
+    };
 
-    if (!ownership.available) {
-      this.db.log('info', `实例 #${id} 频道归属：owners 接口不可用，保留全部频道为 unknown（${ownership.reason || '无授权'}）`);
-      return rows.map(item => ({ ...item, ownershipStatus: 'unknown', ownerTinyId: '', ownershipSource: 'unknown' }));
-    }
-
-    const counts = ownership.counts || {};
     this.db.log(
       'info',
-      `实例 #${id} 频道归属：接口返回 created=${Number(counts.created || 0)} managed=${Number(counts.managed || 0)} joined=${Number(counts.joined || 0)}；owners ${ownership.ownerVerified ? '已确认当前账号' : '未返回可用 tiny_id'}`
+      `实例 #${id} 频道归属：当前 QQ 页面接口捕获 owners=${captured.snapshot.ownersResponseCount}；` +
+      `频道列表 created=${groupedCounts.created} managed=${groupedCounts.managed} joined=${groupedCounts.joined}`
     );
 
-    return rows.map(item => {
-      const guildNumber = text(item.guildNumber || item.url?.match?.(/\/g\/([^/?#]+)/i)?.[1]).toLowerCase();
-      const meta = (guildNumber && ownership.byNumber.get(guildNumber)) || ownership.byName.get(text(item.name)) || null;
-      if (!meta) return { ...item, ownershipStatus: 'unknown', ownerTinyId: '', ownershipSource: 'api-unmatched' };
-
+    const result = captured.rows.map(item => {
+      const ownership = classifyRow(item, captured.snapshot, loginName);
       const enriched = {
         ...item,
-        guildId: meta.guildId || item.guildId,
-        guildNumber: meta.guildNumber || item.guildNumber,
-        ownershipStatus: meta.status,
-        ownerTinyId: meta.ownerTinyId || '',
-        ownershipSource: ownership.ownerVerified ? 'owners+guild-list' : 'guild-list',
-        source: meta.status === 'owned' ? 'owner' : meta.source,
-        sourceLabel: meta.label,
-        selectable: meta.status === 'owned'
+        guildId: ownership.guildId || item.guildId,
+        guildNumber: ownership.guildNumber || item.guildNumber,
+        ownershipStatus: ownership.status,
+        ownerTinyId: ownership.ownerTinyId || '',
+        ownershipSource: ownership.source,
+        source: ownership.source,
+        sourceLabel: ownership.label,
+        // 安全策略：只有明确确认是频道主的频道才允许自动导入。
+        selectable: ownership.status === 'owned'
       };
-      this.db.saveChannelOwnership(id, {
-        status: meta.status,
-        ownerTinyId: meta.ownerTinyId,
-        guildNumber: enriched.guildNumber,
-        url: enriched.url
-      });
+
+      if (ownership.status !== 'unknown') {
+        this.db.saveChannelOwnership(id, {
+          status: ownership.status,
+          ownerTinyId: ownership.ownerTinyId,
+          guildId: enriched.guildId,
+          guildNumber: enriched.guildNumber,
+          url: enriched.url
+        });
+      }
       return enriched;
     });
+
+    const owned = result.filter(item => item.ownershipStatus === 'owned').length;
+    const notOwned = result.filter(item => item.ownershipStatus === 'not_owned').length;
+    const unknown = result.filter(item => item.ownershipStatus === 'unknown').length;
+    this.db.log('info', `实例 #${id} 频道归属结果：自己的=${owned}，别人的=${notOwned}，未确认=${unknown}`);
+    return result;
   };
 };
