@@ -109,7 +109,6 @@ module.exports = function installUserscriptDomPublishingSupport(DB, BrowserManag
       if (!postUrl) throw new Error('帖子已发布，但没有获取到帖子详情链接');
       if (wc.getURL() !== postUrl) await this.navigate(task.instance_id, postUrl);
       if (!(await this.getLoginStatus(task.instance_id, record)).loggedIn) throw new Error('QQ 登录状态已失效，请重新登录后继续');
-      await sleep(800);
       const cr = await this.qqcComment(wc, postUrl, comment);
       this.db.setTargetPostUrl?.(target.id, cr.postUrl || postUrl); this.db.setTargetCommentStatus?.(target.id,'success'); this.db.setTargetStatus(target.id,'success');
       this.db.log('info', `任务 #${task.id} -> ${target.channel_name} 评论发送成功（油猴DOM）`);
