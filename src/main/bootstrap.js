@@ -26,4 +26,6 @@ require('./channel-current-page-sync-support')(BrowserManager);
 require('./channel-owner-filter-support')(DB, BrowserManager);
 // 第二层：接口拿不到归属时，逐个打开频道并读取页面真实“频道主”标签和昵称。
 require('./channel-owner-dom-fallback-support')(BrowserManager);
+// 频道管理和新建任务最终都只暴露已经明确确认 owned 的频道。
+require('./owned-channel-list-support')(DB);
 require('./main');
