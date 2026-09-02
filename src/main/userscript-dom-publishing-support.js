@@ -3,6 +3,17 @@ const path = require('path');
 
 module.exports = function installUserscriptDomPublishingSupport(DB, BrowserManager) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const SUBMIT_DELAY_MIN_MS = 1000;
+  const SUBMIT_DELAY_MAX_MS = 3000;
+  let lastSubmitDelayMs = -1;
+  const nextSubmitDelayMs = () => {
+    let value = Math.floor(Math.random() * (SUBMIT_DELAY_MAX_MS - SUBMIT_DELAY_MIN_MS + 1)) + SUBMIT_DELAY_MIN_MS;
+    if (value === lastSubmitDelayMs) {
+      value = value >= SUBMIT_DELAY_MAX_MS ? SUBMIT_DELAY_MIN_MS : value + 1;
+    }
+    lastSubmitDelayMs = value;
+    return value;
+  };
   const S = {
     box: '.publish-editor-container', area: '.publish-editor-container .editor-area',
     header: '.publish-editor-container .editor-header', edit: '.publish-editor-container .ProseMirror',
@@ -51,6 +62,9 @@ module.exports = function installUserscriptDomPublishingSupport(DB, BrowserManag
   BrowserManager.prototype.qqcSnapshot = webContents => webContents.executeJavaScript(`(()=>[...new Set([...document.querySelectorAll(${JSON.stringify(S.feed)})].map(e=>String(e.dataset.index||'')).filter(Boolean))])()`, true).catch(()=>[]);
 
   BrowserManager.prototype.qqcPublish = async function(webContents, before) {
+    const submitDelayMs = nextSubmitDelayMs();
+    this.db.log('info', `油猴DOM：发表前随机等待 ${(submitDelayMs / 1000).toFixed(3)} 秒`);
+    await sleep(submitDelayMs);
     const clicked = await webContents.executeJavaScript(`(()=>{const b=document.querySelector(${JSON.stringify(S.send)});if(!b||b.disabled||b.classList.contains('disabled'))return false;b.click();return true})()`, true);
     if (!clicked) throw new Error('油猴DOM：发表按钮点击失败');
     const old = new Set(before || []);
