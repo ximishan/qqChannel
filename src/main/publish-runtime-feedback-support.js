@@ -68,29 +68,53 @@ module.exports = function installPublishRuntimeFeedbackSupport(BrowserManager) {
       const type = ctx?.task?.media_type === 'image' ? '图片' : '视频';
       emit(this, `选择${type}`, '正在把本地素材交给 QQ 上传控件');
 
-      // Electron 必须先通过 CDP 把真实本地路径写入 <input type=file>。
-      await previousSetFile.call(this, webContents, mediaPath);
-
-      // 油猴脚本 attachFiles() 在写入 input.files 后会主动 dispatch change。
-      // 原 Electron 适配只做 DOM.setFileInputFiles，少了这一层事件链，QQ 前端可能
-      // 没有启动预览/上传流程，于是后续一直等待媒体预览直到超时。
-      const eventResult = await webContents.executeJavaScript(`(() => {
+      // 油猴脚本的关键不是“input.files 最终必须还能读到”，而是 QQ 前端收到
+      // 文件选择事件后开始生成预览/上传。React 处理 change 后可能立即重建 input，
+      // 此时重新 querySelector 得到的新 input.files 为 0 是正常现象，不能据此判失败。
+      await webContents.executeJavaScript(`(() => {
         const input = document.querySelector('.publish-editor-container input[type=file]');
-        if (!input) return { ok: false, files: 0 };
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return { ok: true, files: Number(input.files?.length || 0) };
-      })()`, true).catch(() => ({ ok: false, files: 0 }));
+        window.__QQC_FILE_EVENT_STATE__ = { input: 0, change: 0 };
+        if (!input) return false;
+        input.addEventListener('input', () => { window.__QQC_FILE_EVENT_STATE__.input += 1; });
+        input.addEventListener('change', () => { window.__QQC_FILE_EVENT_STATE__.change += 1; });
+        return true;
+      })()`, true).catch(() => false);
 
-      if (!eventResult?.ok) throw new Error('油猴DOM：设置文件后找不到发布媒体 input[type=file]');
-      if (!eventResult.files) throw new Error('油猴DOM：文件已选择但 input.files 为空');
+      // Electron 通过 CDP 选择真实本地文件。Chromium 通常会自行触发 input/change。
+      await previousSetFile.call(this, webContents, mediaPath);
+      await sleep(80);
 
-      emit(this, `等待${type}上传`, `已触发油猴脚本同款 change 事件，文件数 ${eventResult.files}`);
-      return eventResult;
+      let eventState = await webContents.executeJavaScript(`(() => ({
+        input: Number(window.__QQC_FILE_EVENT_STATE__?.input || 0),
+        change: Number(window.__QQC_FILE_EVENT_STATE__?.change || 0)
+      }))()`, true).catch(() => ({ input: 0, change: 0 }));
+
+      // 只有 CDP 没有产生任何文件选择事件时，才补发油猴脚本同款 change。
+      // 不检查 input.files，因为 QQ 可能已消费文件并替换了 input 节点。
+      if (!eventState.input && !eventState.change) {
+        const fallback = await webContents.executeJavaScript(`(() => {
+          const input = document.querySelector('.publish-editor-container input[type=file]');
+          if (!input) return false;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`, true).catch(() => false);
+        if (!fallback) throw new Error('油猴DOM：设置文件后找不到发布媒体 input[type=file]');
+        eventState = { input: 1, change: 1, fallback: true };
+      }
+
+      emit(
+        this,
+        `等待${type}上传`,
+        eventState.fallback
+          ? 'CDP 未观察到事件，已补发油猴脚本同款 input/change，开始等待媒体预览'
+          : `QQ 已收到文件选择事件（input=${eventState.input}, change=${eventState.change}），开始等待媒体预览`
+      );
+      return eventState;
     };
   }
 
-  // 这里严格按用户原始油猴脚本 attachFiles() + post() 的顺序执行：
+  // 严格按用户原始油猴脚本 attachFiles() + post() 的顺序执行：
   // 1. 等 pubPreview 出现；2. 等 image-mask 消失（超时可忽略）；
   // 3. 单独最多 15 秒等待“发表”按钮可用。
   proto.qqcWaitReady = async function qqcWaitReadyUserscriptExact(webContents, hasMedia) {
@@ -98,18 +122,16 @@ module.exports = function installPublishRuntimeFeedbackSupport(BrowserManager) {
     const mediaType = String(ctx?.task?.media_type || '');
 
     if (hasMedia) {
-      // 原油猴脚本 attachFiles 默认 180000ms。这里允许设置页覆盖，但不再把
-      // “上传完成”和“发表按钮可用”混成同一个等待条件。
       const uploadTimeout = Math.max(15000, Number(this.db.getSetting('upload_timeout_ms', '180000')) || 180000);
       const previewSelector = '.publish-editor-container .image-draggable-preview, .publish-editor-container .preview-list img, .publish-editor-container .preview-list video';
 
+      // 当前工具每个任务只注入一个素材，所以按原脚本至少等待 1 个 pubPreview。
+      // 不再用 input.files.length 计算 need，因为 QQ/React 可能已消费并重建 input。
       const preview = await waitForPage(
         webContents,
         `(() => {
-          const input = document.querySelector('.publish-editor-container input[type=file]');
-          const need = Math.max(1, Number(input?.files?.length || 1));
           const count = document.querySelectorAll(${JSON.stringify(previewSelector)}).length;
-          return count >= need ? { count, need } : null;
+          return count >= 1 ? { count } : null;
         })()`,
         uploadTimeout,
         120
@@ -118,7 +140,7 @@ module.exports = function installPublishRuntimeFeedbackSupport(BrowserManager) {
       if (!preview) {
         throw new Error(`油猴DOM：等待媒体上传完成超时（${Math.round(uploadTimeout / 1000)}秒，未出现原脚本 pubPreview）`);
       }
-      emit(this, '媒体预览已出现', `检测到 ${preview.count}/${preview.need} 个预览`);
+      emit(this, '媒体预览已出现', `检测到 ${preview.count} 个预览`);
 
       // 与原脚本一致：等待 image-mask 消失，但这一段失败不阻止后续按钮判断。
       await waitForPage(
