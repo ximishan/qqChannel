@@ -1,6 +1,20 @@
 module.exports = function installLoginQrSupport(BrowserManager) {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+  function webContentsOf(record) {
+    return record?.view?.webContents || null;
+  }
+
+  function isQQHomeUrl(value) {
+    return String(value || '').startsWith('https://pd.qq.com/');
+  }
+
+  function isTransientLoadError(error) {
+    const text = String(error?.message || error || '');
+    const code = Number(error?.errno ?? error?.code);
+    return code === -3 || code === -100 || code === -101 || /ERR_ABORTED|ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|net::ERR_CONNECTION/i.test(text);
+  }
+
   async function waitFor(webContents, script, timeout = 12000, interval = 200) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -11,13 +25,46 @@ module.exports = function installLoginQrSupport(BrowserManager) {
     return null;
   }
 
+  async function safeOpenQQHome(manager, instanceId, record) {
+    const webContents = webContentsOf(record);
+    if (!webContents || webContents.isDestroyed?.()) throw new Error('登录页面不存在或已经关闭');
+    if (isQQHomeUrl(webContents.getURL())) return true;
+
+    try {
+      await manager.navigate(instanceId, 'https://pd.qq.com/');
+      return true;
+    } catch (error) {
+      const msg = String(error?.message || error);
+      manager.db?.log?.('warn', `实例 #${instanceId} 打开 QQ 首页失败，准备重试：${msg}`);
+      if (!isTransientLoadError(error)) throw error;
+    }
+
+    await sleep(500);
+    try {
+      await webContents.loadURL('https://pd.qq.com/');
+    } catch (error) {
+      const msg = String(error?.message || error);
+      manager.db?.log?.('warn', `实例 #${instanceId} QQ 首页重试仍有异常：${msg}`);
+      if (!isTransientLoadError(error)) throw error;
+    }
+
+    await waitFor(
+      webContents,
+      `(() => location.href.startsWith('https://pd.qq.com/') && (document.readyState === 'interactive' || document.readyState === 'complete' || document.body?.children?.length > 0))()`,
+      15000,
+      200
+    );
+    return isQQHomeUrl(webContents.getURL());
+  }
+
   BrowserManager.prototype.openLoginQrCode = async function openLoginQrCode(instanceId, record = null) {
     const id = this.normalizeInstanceId(instanceId);
     const browserRecord = record || await this.getOrCreateView(id);
-    const webContents = browserRecord.view.webContents;
+    const webContents = webContentsOf(browserRecord);
+    if (!webContents || webContents.isDestroyed?.()) throw new Error('当前实例浏览器页面不存在');
 
-    if (!String(webContents.getURL() || '').startsWith('https://pd.qq.com/')) {
-      await this.navigate(id, 'https://pd.qq.com/');
+    if (!isQQHomeUrl(webContents.getURL())) {
+      await safeOpenQQHome(this, id, browserRecord);
     }
 
     // 等首页主体出现，防止页面尚未渲染就开始找登录入口。
@@ -97,10 +144,18 @@ module.exports = function installLoginQrSupport(BrowserManager) {
   BrowserManager.prototype.beginPublishingLogin = async function beginPublishingLoginWithQr(instanceId) {
     const id = this.normalizeInstanceId(instanceId);
     const record = await this.getOrCreateView(id);
-    record.view.setBounds(this.lastBounds);
-    await this.navigate(id, 'https://pd.qq.com/');
+    if (typeof record.view?.setBounds === 'function') record.view.setBounds(this.lastBounds);
 
-    const status = await this.getLoginStatus(id, record, { wait: false });
+    await safeOpenQQHome(this, id, record);
+
+    const status = await this.getLoginStatus(id, record, { wait: false }).catch(error => ({
+      loggedIn: false,
+      name: '',
+      url: webContentsOf(record)?.getURL?.() || '',
+      instanceId: id,
+      error: String(error?.message || error)
+    }));
+
     if (status.loggedIn) {
       return {
         ...status,
@@ -112,12 +167,13 @@ module.exports = function installLoginQrSupport(BrowserManager) {
 
     const qr = await this.openLoginQrCode(id, record).catch(error => ({
       triggered: false,
+      confirmed: false,
       reason: String(error?.message || error),
-      url: record.view.webContents.getURL()
+      url: webContentsOf(record)?.getURL?.() || ''
     }));
 
     if (!qr.triggered) {
-      this.db.log('warn', `实例 #${id} 未能自动打开 QQ 登录二维码：${qr.reason || '未找到登录入口'}`);
+      this.db.log('warn', `实例 #${id} 未能自动打开 QQ 登录二维码：${qr.reason || '未找到登录入口'}；已保留 QQ 页面，可手动点击登录`);
     } else if (!qr.confirmed) {
       this.db.log('warn', `实例 #${id} 已自动点击 QQ 登录入口，但暂未确认二维码 DOM；当前页面：${qr.url || ''}`);
     } else {
@@ -134,7 +190,7 @@ module.exports = function installLoginQrSupport(BrowserManager) {
         ? 'QQ 登录二维码已打开，请使用手机 QQ 扫码'
         : qr.triggered
           ? '已自动打开 QQ 登录入口，请稍候二维码加载'
-          : '未能自动弹出二维码，请刷新内置浏览器后重试登录'
+          : '未能自动弹出二维码，QQ 页面已打开，请在页面里手动点击登录'
     };
   };
 };
