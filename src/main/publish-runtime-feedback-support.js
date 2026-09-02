@@ -84,7 +84,7 @@ module.exports = function installPublishRuntimeFeedbackSupport(BrowserManager) {
         };
         const box = document.querySelector('.publish-editor-container');
         const button = box?.querySelector('.publish-button button');
-        const masks = [...(box?.querySelectorAll('.image-mask,[class*="upload"][class*="mask"],[class*="uploading"],[class*="progress"]') || [])];
+        const masks = [...(box?.querySelectorAll('.image-mask,[class*="upload"][class*="mask"],[class*="uploading"]') || [])];
         const visibleMask = masks.some(visible);
         const input = box?.querySelector('input[type=file]');
         const fileCount = Number(input?.files?.length || 0);
