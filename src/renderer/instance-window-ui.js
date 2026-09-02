@@ -2,49 +2,23 @@
   const params = new URLSearchParams(location.search);
   const fixedInstanceId = Math.max(0, Number(params.get('instanceId')) || 0);
   const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   window.QQCHANNEL_FIXED_INSTANCE_ID = fixedInstanceId || null;
 
-  function loadUiFeedback() {
-    if (document.querySelector('script[data-qqchannel-ui-feedback="1"]')) return;
+  function loadScriptOnce(src, dataKey) {
+    const attr = `data-${dataKey}`;
+    if (document.querySelector(`script[${attr}="1"]`)) return;
     const script = document.createElement('script');
-    script.src = 'ui-feedback.js';
-    script.dataset.qqchannelUiFeedback = '1';
+    script.src = src;
+    script.setAttribute(attr, '1');
     document.head.appendChild(script);
   }
 
-  function loadQrLoginUi() {
-    if (document.querySelector('script[data-qqchannel-qr-login="1"]')) return;
-    const script = document.createElement('script');
-    script.src = 'login-qr-ui.js';
-    script.dataset.qqchannelQrLogin = '1';
-    document.head.appendChild(script);
-  }
-
-  function loadBatchContentUi() {
-    if (document.querySelector('script[data-qqchannel-batch-content="1"]')) return;
-    const script = document.createElement('script');
-    script.src = 'batch-content-support-ui.js';
-    script.dataset.qqchannelBatchContent = '1';
-    document.head.appendChild(script);
-  }
-
-  function loadSettingsUiCleanup() {
-    if (document.querySelector('script[data-qqchannel-settings-cleanup="1"]')) return;
-    const script = document.createElement('script');
-    script.src = 'settings-ui-cleanup.js';
-    script.dataset.qqchannelSettingsCleanup = '1';
-    document.head.appendChild(script);
-  }
-
-  function loadPublishStageUi() {
-    if (document.querySelector('script[data-qqchannel-publish-stage="1"]')) return;
-    const script = document.createElement('script');
-    script.src = 'publish-stage-ui.js';
-    script.dataset.qqchannelPublishStage = '1';
-    document.head.appendChild(script);
+  function loadRuntimeUi() {
+    loadScriptOnce('ui-feedback.js', 'qqchannel-ui-feedback');
+    loadScriptOnce('login-qr-ui.js', 'qqchannel-qr-login');
+    loadScriptOnce('publish-stage-ui.js', 'qqchannel-publish-stage');
   }
 
   async function waitFor(fn, timeout = 10000) {
@@ -65,21 +39,14 @@
   async function openWindowFor(instance) {
     const id = Number(instance?.id || instance?.instanceId || instance);
     if (!id || !window.api.openInstanceWindow) return;
-    await window.api.openInstanceWindow({
-      instanceId: id,
-      name: String(instance?.name || '')
-    });
+    await window.api.openInstanceWindow({ instanceId: id, name: String(instance?.name || '') });
   }
 
   function scopeTargetHost(host) {
     if (!fixedInstanceId || !host) return;
-    const groups = [
-      ...host.querySelectorAll('.instance-target-group[data-instance-id]'),
-      ...host.querySelectorAll('.batch-instance-group[data-instance-id]')
-    ];
+    const groups = [...host.querySelectorAll('.instance-target-group[data-instance-id]')];
     for (const group of groups) {
-      const id = Number(group.dataset.instanceId || 0);
-      const same = id === fixedInstanceId;
+      const same = Number(group.dataset.instanceId || 0) === fixedInstanceId;
       group.style.display = same ? '' : 'none';
       if (!same) {
         group.querySelectorAll('input[type="checkbox"]').forEach(input => {
@@ -92,14 +59,12 @@
 
   function scopeAllTargets() {
     scopeTargetHost($('#taskChannelList'));
-    scopeTargetHost($('#batchChannelList'));
   }
 
   function observeTargetHost(selector) {
     const host = $(selector);
     if (!host || !fixedInstanceId) return;
-    const observer = new MutationObserver(() => scopeTargetHost(host));
-    observer.observe(host, { childList: true, subtree: true });
+    new MutationObserver(() => scopeTargetHost(host)).observe(host, { childList: true, subtree: true });
     scopeTargetHost(host);
   }
 
@@ -117,25 +82,13 @@
       await sleep(250);
     }
 
-    // 下拉框不再锁死。它只作为“实例窗口导航器”：
-    // 选择其他实例会打开/聚焦那个实例自己的窗口，当前窗口仍固定当前实例。
     select.disabled = false;
     select.title = '选择其他实例可打开或聚焦对应实例窗口';
-
-    const channelSelect = $('#channelInstanceSelect');
-    if (channelSelect) {
-      if ([...channelSelect.options].some(option => Number(option.value) === fixedInstanceId)) {
-        channelSelect.value = String(fixedInstanceId);
-      }
-      channelSelect.disabled = true;
-      channelSelect.title = '频道管理固定为当前窗口实例';
-    }
 
     const rows = await getInstances();
     const current = rows.find(item => Number(item.id) === fixedInstanceId);
     const name = current?.name || `实例 #${fixedInstanceId}`;
     document.title = `腾讯频道批量发布工具 - ${name}`;
-
     const title = $('.brand .title');
     if (title) title.textContent = `腾讯频道批量发布工具 · ${name}`;
 
@@ -150,7 +103,6 @@
     if (!select || select.dataset.instanceWindowSwitcher === '1') return;
     select.dataset.instanceWindowSwitcher = '1';
 
-    // capture 阶段截住 app.js 原有的“切换当前实例”逻辑，避免当前窗口串号。
     select.addEventListener('change', event => {
       const targetId = Number(select.value || 0);
       if (!targetId || targetId === fixedInstanceId) return;
@@ -177,10 +129,9 @@
     }, true);
   }
 
-  function installSelectAllGuards() {
+  function installSelectAllGuard() {
     if (!fixedInstanceId) return;
     $('#btnSelectAll')?.addEventListener('click', () => setTimeout(scopeAllTargets, 0));
-    $('#btnBatchSelectAll')?.addEventListener('click', () => setTimeout(scopeAllTargets, 0));
   }
 
   function installCreateInstanceWatcher() {
@@ -202,9 +153,7 @@
         const created = rows.find(item => !snapshot.has(Number(item.id)));
         if (created) {
           await openWindowFor(created);
-          if (!fixedInstanceId && window.api.hideCoordinatorWindow) {
-            await window.api.hideCoordinatorWindow();
-          }
+          if (!fixedInstanceId && window.api.hideCoordinatorWindow) await window.api.hideCoordinatorWindow();
         }
         if (fixedInstanceId) {
           await restoreFixedInstance();
@@ -217,7 +166,6 @@
   async function bootCoordinator() {
     const rows = await getInstances();
     if (!rows.length) return;
-
     for (const instance of rows) {
       await openWindowFor(instance);
       await sleep(60);
@@ -229,25 +177,16 @@
     await restoreFixedInstance();
     await installInstanceWindowSwitcher();
     observeTargetHost('#taskChannelList');
-    observeTargetHost('#batchChannelList');
-    installSelectAllGuards();
-
-    // 某些旧脚本在弹窗打开后会重新渲染所有实例；每次打开后再次收窄到当前实例。
+    installSelectAllGuard();
     $('#btnCreateTask')?.addEventListener('click', () => setTimeout(scopeAllTargets, 250));
-    $('#btnBatchVideo')?.addEventListener('click', () => setTimeout(scopeAllTargets, 250));
   }
 
   function start() {
-    loadUiFeedback();
-    loadQrLoginUi();
-    loadBatchContentUi();
-    loadSettingsUiCleanup();
-    loadPublishStageUi();
+    loadRuntimeUi();
     installCreateInstanceWatcher();
     if (fixedInstanceId) {
       bootFixedWindow().catch(error => console.error('实例窗口初始化失败', error));
     } else {
-      // 初始窗口只负责协调。已有实例时自动为每个实例创建独立窗口，然后隐藏自身。
       setTimeout(() => bootCoordinator().catch(error => console.error('打开实例窗口失败', error)), 500);
     }
   }
