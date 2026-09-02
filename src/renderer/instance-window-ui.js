@@ -39,6 +39,14 @@
     document.head.appendChild(script);
   }
 
+  function loadPublishStageUi() {
+    if (document.querySelector('script[data-qqchannel-publish-stage="1"]')) return;
+    const script = document.createElement('script');
+    script.src = 'publish-stage-ui.js';
+    script.dataset.qqchannelPublishStage = '1';
+    document.head.appendChild(script);
+  }
+
   async function waitFor(fn, timeout = 10000) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -234,6 +242,7 @@
     loadQrLoginUi();
     loadBatchContentUi();
     loadSettingsUiCleanup();
+    loadPublishStageUi();
     installCreateInstanceWatcher();
     if (fixedInstanceId) {
       bootFixedWindow().catch(error => console.error('实例窗口初始化失败', error));
