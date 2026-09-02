@@ -19,6 +19,11 @@
     return String(template || '').replaceAll('{filename}', String(stem || ''));
   }
 
+  function notify(message, type = 'info') {
+    if (typeof window.qqToast === 'function') window.qqToast(message, { type });
+    else console[type === 'error' ? 'error' : 'log'](message);
+  }
+
   function installStyles() {
     if ($('#taskVideoFolderIntegrationStyle')) return;
     const style = document.createElement('style');
@@ -119,7 +124,7 @@
       if (folderVideos.length > 8) shown.push(`……另有 ${folderVideos.length - 8} 个视频`);
       preview.textContent = shown.join('\n');
     }
-    if (!folderVideos.length) alert('这个目录中没有识别到支持的视频文件');
+    if (!folderVideos.length) notify('这个目录中没有识别到支持的视频文件', 'warning');
   }
 
   function currentVideoMode() {
@@ -181,16 +186,11 @@
   }
 
   function folderAssignments(targets) {
-    return targets.map((target, index) => ({
-      target,
-      video: folderVideos[index % folderVideos.length]
-    }));
+    return targets.map((target, index) => ({ target, video: folderVideos[index % folderVideos.length] }));
   }
 
   function folderPreview(assignments, unusedCount) {
-    const shown = assignments.slice(0, 8).map((item, index) =>
-      `${index + 1}. ${item.target.channelName} ← ${fileName(item.video)}`
-    );
+    const shown = assignments.slice(0, 8).map((item, index) => `${index + 1}. ${item.target.channelName} ← ${fileName(item.video)}`);
     if (assignments.length > 8) shown.push(`……另有 ${assignments.length - 8} 个频道`);
     if (unusedCount > 0) shown.push(`另有 ${unusedCount} 个多余视频不会发布`);
     return shown.join('\n');
@@ -208,13 +208,13 @@
     let intervalMinSeconds = Number($('#taskIntervalMin')?.value || 0);
     let intervalMaxSeconds = Number($('#taskIntervalMax')?.value || 0);
 
-    if (mediaType === 'text' && !contentTemplate) return alert('纯文本任务必须填写“内容”');
-    if (mediaType === 'image' && !mediaPath) return alert('请选择图片');
-    if (mediaType === 'video' && videoMode === 'single' && !mediaPath) return alert('请选择视频');
-    if (mediaType === 'video' && videoMode === 'folder' && !folderVideos.length) return alert('请选择包含视频的目录');
-    if (!targets.length) return alert('至少选择一个频道');
+    if (mediaType === 'text' && !contentTemplate) return notify('纯文本任务必须填写“内容”', 'warning');
+    if (mediaType === 'image' && !mediaPath) return notify('请选择图片', 'warning');
+    if (mediaType === 'video' && videoMode === 'single' && !mediaPath) return notify('请选择视频', 'warning');
+    if (mediaType === 'video' && videoMode === 'folder' && !folderVideos.length) return notify('请选择包含视频的目录', 'warning');
+    if (!targets.length) return notify('至少选择一个频道', 'warning');
     if (!Number.isFinite(intervalMinSeconds) || !Number.isFinite(intervalMaxSeconds) || intervalMinSeconds < 0 || intervalMaxSeconds < 0) {
-      return alert('随机间隔必须是大于或等于 0 的秒数');
+      return notify('随机间隔必须是大于或等于 0 的秒数', 'warning');
     }
     if (intervalMaxSeconds < intervalMinSeconds) [intervalMinSeconds, intervalMaxSeconds] = [intervalMaxSeconds, intervalMinSeconds];
 
@@ -258,10 +258,7 @@
           await window.api.createTask({
             instanceId: target.instanceId,
             title,
-            body: {
-              content: replaceFilename(contentTemplate, stem),
-              comment: replaceFilename(commentTemplate, stem)
-            },
+            body: { content: replaceFilename(contentTemplate, stem), comment: replaceFilename(commentTemplate, stem) },
             mediaPath: video,
             mediaType: 'video',
             channelIds: [target.channelId],
@@ -297,14 +294,13 @@
       resetFolder();
       if ($('#taskVideoSourceMode')) $('#taskVideoSourceMode').value = 'single';
       syncMediaUi();
-
       $('#btnRefreshTasks')?.click();
       if (typeof refreshSchedulerState === 'function') await refreshSchedulerState().catch(() => {});
 
       const extra = isFolder && unusedCount > 0 ? `，${unusedCount} 个多余视频未创建任务` : '';
-      alert(`创建完成：${targets.length} 条任务已保存${extra}`);
+      notify(`创建完成：${targets.length} 条任务已保存${extra}`, 'success');
     } catch (error) {
-      alert(`创建任务失败：${String(error?.message || error)}`);
+      notify(`创建任务失败：${String(error?.message || error)}`, 'error');
     } finally {
       if (button) {
         button.disabled = false;
@@ -319,17 +315,7 @@
     const newButton = oldButton.cloneNode(true);
     newButton.dataset.folderIntegrated = '1';
     oldButton.replaceWith(newButton);
-    newButton.addEventListener('click', () => createTasksIntegrated().catch(error => alert(String(error?.message || error))));
-  }
-
-  function hideLegacyBatchEntry() {
-    const button = $('#btnBatchVideo');
-    if (button) {
-      button.classList.add('hidden');
-      button.style.display = 'none';
-      button.setAttribute('aria-hidden', 'true');
-      button.tabIndex = -1;
-    }
+    newButton.addEventListener('click', () => createTasksIntegrated().catch(error => notify(String(error?.message || error), 'error')));
   }
 
   function updateDialogCopy() {
@@ -345,7 +331,6 @@
 
   function install() {
     installStyles();
-    hideLegacyBatchEntry();
     ensureControls();
     updateDialogCopy();
     replaceSaveButton();
