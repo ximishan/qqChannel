@@ -31,6 +31,17 @@ module.exports = function installPublishRuntimeFeedbackSupport(BrowserManager) {
     );
   }
 
+  async function waitForPage(webContents, source, timeout, interval = 120) {
+    const end = Date.now() + timeout;
+    let last = null;
+    while (Date.now() < end) {
+      last = await webContents.executeJavaScript(source, true).catch(() => null);
+      if (last) return last;
+      await sleep(interval);
+    }
+    return null;
+  }
+
   proto.publishOneTarget = async function publishOneTargetWithStageContext(record, task, target, selectors, attempt) {
     const old = this.__qqchannelPublishStageContext;
     this.__qqchannelPublishStageContext = { task, target, attempt };
@@ -52,79 +63,94 @@ module.exports = function installPublishRuntimeFeedbackSupport(BrowserManager) {
   }
 
   if (typeof previousSetFile === 'function') {
-    proto.qqcSetFile = async function qqcSetFileWithStage(webContents, mediaPath) {
+    proto.qqcSetFile = async function qqcSetFileWithUserscriptEvents(webContents, mediaPath) {
       const ctx = context(this);
       const type = ctx?.task?.media_type === 'image' ? '图片' : '视频';
       emit(this, `选择${type}`, '正在把本地素材交给 QQ 上传控件');
-      const result = await previousSetFile.call(this, webContents, mediaPath);
-      emit(this, `等待${type}上传`, type === 'image' ? '通常几秒内完成，最长等待 45 秒' : '等待 QQ 完成视频上传');
-      return result;
+
+      // Electron 必须先通过 CDP 把真实本地路径写入 <input type=file>。
+      await previousSetFile.call(this, webContents, mediaPath);
+
+      // 油猴脚本 attachFiles() 在写入 input.files 后会主动 dispatch change。
+      // 原 Electron 适配只做 DOM.setFileInputFiles，少了这一层事件链，QQ 前端可能
+      // 没有启动预览/上传流程，于是后续一直等待媒体预览直到超时。
+      const eventResult = await webContents.executeJavaScript(`(() => {
+        const input = document.querySelector('.publish-editor-container input[type=file]');
+        if (!input) return { ok: false, files: 0 };
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true, files: Number(input.files?.length || 0) };
+      })()`, true).catch(() => ({ ok: false, files: 0 }));
+
+      if (!eventResult?.ok) throw new Error('油猴DOM：设置文件后找不到发布媒体 input[type=file]');
+      if (!eventResult.files) throw new Error('油猴DOM：文件已选择但 input.files 为空');
+
+      emit(this, `等待${type}上传`, `已触发油猴脚本同款 change 事件，文件数 ${eventResult.files}`);
+      return eventResult;
     };
   }
 
-  // QQ 页面自己会在素材未上传完成时禁用“发表”按钮，因此“发表按钮可用 + 上传遮罩消失”
-  // 是比某个固定预览 class 更可靠的完成信号。旧逻辑强制要求命中 preview class，QQ DOM
-  // 一变化就会白等完整个 upload_timeout_ms（默认 120 秒）。
-  proto.qqcWaitReady = async function qqcWaitReadyRobust(webContents, hasMedia) {
+  // 这里严格按用户原始油猴脚本 attachFiles() + post() 的顺序执行：
+  // 1. 等 pubPreview 出现；2. 等 image-mask 消失（超时可忽略）；
+  // 3. 单独最多 15 秒等待“发表”按钮可用。
+  proto.qqcWaitReady = async function qqcWaitReadyUserscriptExact(webContents, hasMedia) {
     const ctx = context(this);
     const mediaType = String(ctx?.task?.media_type || '');
-    const configured = Math.max(15000, Number(this.db.getSetting('upload_timeout_ms', '120000')) || 120000);
-    const timeout = hasMedia && mediaType === 'image' ? Math.min(configured, 45000) : configured;
-    const startedAt = Date.now();
-    let consecutiveReady = 0;
-    let lastState = null;
 
-    while (Date.now() - startedAt < timeout) {
-      const state = await webContents.executeJavaScript(`(() => {
-        const visible = el => {
-          if (!el) return false;
-          const style = getComputedStyle(el);
-          const rect = el.getBoundingClientRect();
-          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
-        };
-        const box = document.querySelector('.publish-editor-container');
-        const button = box?.querySelector('.publish-button button');
-        const masks = [...(box?.querySelectorAll('.image-mask,[class*="upload"][class*="mask"],[class*="uploading"]') || [])];
-        const visibleMask = masks.some(visible);
-        const input = box?.querySelector('input[type=file]');
-        const fileCount = Number(input?.files?.length || 0);
-        const previewCount = box ? box.querySelectorAll([
-          '.image-draggable-preview',
-          '.preview-list img',
-          '.preview-list video',
-          '.image-video-preview',
-          'img[src^="blob:"]',
-          'video[src^="blob:"]',
-          '[class*="preview"] img',
-          '[class*="preview"] video'
-        ].join(',')).length : 0;
-        const enabled = !!(button && visible(button) && !button.disabled && !button.classList.contains('disabled') && button.getAttribute('aria-disabled') !== 'true');
-        return { enabled, visibleMask, fileCount, previewCount, hasButton: !!button };
-      })()`, true).catch(() => null);
+    if (hasMedia) {
+      // 原油猴脚本 attachFiles 默认 180000ms。这里允许设置页覆盖，但不再把
+      // “上传完成”和“发表按钮可用”混成同一个等待条件。
+      const uploadTimeout = Math.max(15000, Number(this.db.getSetting('upload_timeout_ms', '180000')) || 180000);
+      const previewSelector = '.publish-editor-container .image-draggable-preview, .publish-editor-container .preview-list img, .publish-editor-container .preview-list video';
 
-      lastState = state;
-      const ready = !!state?.enabled && !state?.visibleMask;
-      if (ready) consecutiveReady += 1;
-      else consecutiveReady = 0;
+      const preview = await waitForPage(
+        webContents,
+        `(() => {
+          const input = document.querySelector('.publish-editor-container input[type=file]');
+          const need = Math.max(1, Number(input?.files?.length || 1));
+          const count = document.querySelectorAll(${JSON.stringify(previewSelector)}).length;
+          return count >= need ? { count, need } : null;
+        })()`,
+        uploadTimeout,
+        120
+      );
 
-      // 连续两次检测都可发表，避免页面状态切换瞬间误点。
-      if (consecutiveReady >= 2) {
-        const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-        emit(this, '素材已就绪', hasMedia ? `QQ 发表按钮已可用，用时 ${elapsed} 秒` : '发表按钮已可用');
-        return true;
+      if (!preview) {
+        throw new Error(`油猴DOM：等待媒体上传完成超时（${Math.round(uploadTimeout / 1000)}秒，未出现原脚本 pubPreview）`);
       }
-      await sleep(250);
+      emit(this, '媒体预览已出现', `检测到 ${preview.count}/${preview.need} 个预览`);
+
+      // 与原脚本一致：等待 image-mask 消失，但这一段失败不阻止后续按钮判断。
+      await waitForPage(
+        webContents,
+        `(() => {
+          const m = document.querySelector('.publish-editor-container .image-mask');
+          return (!m || m.offsetParent === null) ? true : null;
+        })()`,
+        uploadTimeout,
+        120
+      ).catch(() => null);
+      emit(this, '媒体上传完成', mediaType === 'image' ? '图片处理完成' : '视频处理完成');
     }
 
-    const summary = lastState
-      ? `button=${lastState.hasButton ? '有' : '无'}, enabled=${lastState.enabled ? '是' : '否'}, mask=${lastState.visibleMask ? '有' : '无'}, files=${lastState.fileCount || 0}, previews=${lastState.previewCount || 0}`
-      : '未读取到页面状态';
-    throw new Error(`油猴DOM：等待${hasMedia ? '媒体上传和' : ''}发表按钮可用超时（${Math.round(timeout / 1000)}秒；${summary}）`);
+    const enabled = await waitForPage(
+      webContents,
+      `(() => {
+        const b = document.querySelector('.publish-editor-container .publish-button button');
+        return b && !b.disabled && !/disabled/i.test(String(b.className || '')) ? true : null;
+      })()`,
+      15000,
+      120
+    );
+    if (!enabled) throw new Error('油猴DOM：等待发布按钮可用超时（15秒）');
+
+    emit(this, '发表按钮已可用', '准备提交发布');
+    return true;
   };
 
   if (typeof previousPublish === 'function') {
     proto.qqcPublish = async function qqcPublishWithStage(webContents, before) {
-      emit(this, '正在发表', '已准备点击发表，并等待新帖子出现');
+      emit(this, '正在发表', '点击发表，并按油猴脚本最多等待 40 秒识别新帖');
       const result = await previousPublish.call(this, webContents, before);
       emit(this, '帖子已发布', result?.feedId ? `已识别新帖子 ${result.feedId}` : '已识别新帖子');
       return result;
