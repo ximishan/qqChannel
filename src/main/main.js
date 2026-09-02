@@ -12,8 +12,6 @@ let mainWindow;
 
 app.setPath('userData', path.join(app.getPath('appData'), 'tencent-channel-publisher-demo'));
 
-// Local diagnostics only: opt in with an environment variable so packaged
-// builds never expose a DevTools endpoint by default.
 if (process.env.QQCHANNEL_REMOTE_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.QQCHANNEL_REMOTE_DEBUG_PORT);
 }
@@ -80,16 +78,12 @@ function scanVideoFilesRecursive(rootFolder) {
 
     for (const entry of entries) {
       const fullPath = path.join(folder, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath);
-      } else if (entry.isFile() && supported.has(path.extname(entry.name).toLowerCase())) {
-        files.push(fullPath);
-      }
+      if (entry.isDirectory()) walk(fullPath);
+      else if (entry.isFile() && supported.has(path.extname(entry.name).toLowerCase())) files.push(fullPath);
     }
   };
 
   walk(rootFolder);
-
   return [...new Set(files)].sort((a, b) => {
     const relativeA = path.relative(rootFolder, a);
     const relativeB = path.relative(rootFolder, b);
@@ -117,9 +111,6 @@ function registerIPC() {
   });
 
   ipcMain.handle('channels:list', (_, instanceId) => db.listChannels(instanceId));
-  ipcMain.handle('channels:overview', () => db.listChannelAssignments());
-  ipcMain.handle('channels:move', (_, data) => db.moveChannel(data.id, data.instanceId));
-  ipcMain.handle('channels:add', (_, data) => db.addChannel(data.instanceId, data.name, data.url));
   ipcMain.handle('channels:updateName', (_, data) => db.updateChannelName(data.id, data.name));
   ipcMain.handle('channels:delete', (_, id) => db.deleteChannel(id));
   ipcMain.handle('channels:remoteList', async (_, instanceId) => browserManager.collectChannels(instanceId));
@@ -179,10 +170,6 @@ function registerIPC() {
     return { stopped, count: stopped.length };
   });
 
-  ipcMain.handle('selectors:list', () => db.getSelectors());
-  ipcMain.handle('selectors:save', (_, data) => db.saveSelector(data.key, data.value, data.timeout));
-  ipcMain.handle('selectors:test', async (_, data) => browserManager.testSelector(data.instanceId, data.selector, data.url));
-
   ipcMain.handle('browser:login', async (_, instanceId) => browserManager.beginPublishingLogin(instanceId));
   ipcMain.handle('browser:status', async (_, instanceId) => browserManager.getPublishingLoginStatus(instanceId));
   ipcMain.handle('browser:logout', async (_, instanceId) => {
@@ -200,19 +187,18 @@ function registerIPC() {
   ipcMain.handle('settings:set', (_, data) => db.setSetting(data.key, data.value));
 
   ipcMain.handle('dialog:video', async () => {
-    const r = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }] });
-    return r.canceled ? null : r.filePaths[0];
+    const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv'] }] });
+    return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('dialog:image', async () => {
-    const r = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] }] });
-    return r.canceled ? null : r.filePaths[0];
+    const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] }] });
+    return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('dialog:videoFolder', async () => {
-    const r = await dialog.showOpenDialog({ properties: ['openDirectory'] });
-    if (r.canceled || !r.filePaths[0]) return null;
-    const folder = r.filePaths[0];
-    const files = scanVideoFilesRecursive(folder);
-    return { folder, files };
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const folder = result.filePaths[0];
+    return { folder, files: scanVideoFilesRecursive(folder) };
   });
 
   ipcMain.handle('logs:list', () => db.listLogs());
