@@ -3,15 +3,17 @@ const BrowserManager = require('./browser');
 
 // 多账号 DOM 模式：instances 表中的每条记录都对应一个独立的 Chromium
 // persistent partition。不要加载单账号/CLI 覆盖层，否则多个实例会再次共享登录态。
-require('./comment-support')(DB, BrowserManager);
-require('./comment-dom-fix-support')(DB, BrowserManager);
-require('./task-content-support')(DB, BrowserManager);
-require('./publish-open-fallback-support')(DB, BrowserManager);
-// 最后加载用户已在 Tampermonkey 中实测通过的 QQ 频道 DOM 发布/评论链路。
-// 该兼容层覆盖发布目标执行，但继续复用多账号、SQLite、队列、截图和重试状态机。
+
+// 只保留发布所需的数据层能力：正文/评论分离、帖子已发布标记、评论状态、防重复发帖。
+require('./publishing-data-support')(DB);
+
+// 唯一发布/评论主链：用户已在 Tampermonkey 中实测通过的 QQ 频道 DOM 流程。
 require('./userscript-dom-publishing-support')(DB, BrowserManager);
-// 修正图片上传等待：不再依赖容易变化的预览 class，并向界面发送实时发布阶段。
+
+// Electron 适配层：本地文件注入、油猴脚本同款媒体事件、实时阶段提示。
+// 不提供第二套发布算法，也不回退旧 selector 发布器。
 require('./publish-runtime-feedback-support')(BrowserManager);
+
 // 每个账号实例对应一个独立桌面窗口，内置浏览器视图也绑定到该实例窗口。
 require('./instance-window-support')(BrowserManager);
 // 登录状态必须按实例隔离，并且只有明确看到登录页时才允许把已登录状态降级。
