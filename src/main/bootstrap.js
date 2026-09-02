@@ -22,7 +22,8 @@ require('./login-state-fix-support')(DB, BrowserManager);
 require('./login-qr-support')(BrowserManager);
 // QQ 当前激活频道可能不再使用 .my-guild-item；同步时额外合并当前 /g/... 页面频道。
 require('./channel-current-page-sync-support')(BrowserManager);
-// 频道归属识别直接监听当前已登录 QQ 页面自己的接口响应：优先使用 owners，
-// 再使用 created/managed/joined 频道列表分类。只负责同步过滤，不参与登录和发布。
+// 第一层：监听当前 QQ 页面接口响应，尝试读取 owners / created / managed / joined。
 require('./channel-owner-filter-support')(DB, BrowserManager);
+// 第二层：接口拿不到归属时，逐个打开频道并读取页面真实“频道主”标签和昵称。
+require('./channel-owner-dom-fallback-support')(BrowserManager);
 require('./main');
