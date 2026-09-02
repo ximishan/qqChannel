@@ -2,233 +2,245 @@
 
 ## 1. 项目定位
 
-`qqChannel` 是一个面向 Windows 桌面的腾讯频道批量发布工具。
+`qqChannel` 是一个 Windows Electron 腾讯频道多账号批量发布工具。
 
-核心目标：
+当前核心约束：
 
-- 使用桌面 GUI 管理多个独立账号/实例。
-- 使用 Electron 内置 Chromium DOM 操作 `pd.qq.com`。
-- 扫码登录一次后尽量长期复用登录状态。
-- 使用 SQLite 保存实例、频道、任务、发布状态、选择器配置和日志。
-- 腾讯频道页面 DOM 改动时，优先通过修改选择器配置适配，而不是重新修改并打包整个程序。
+- 一个实例 = 一个独立窗口 = 一个独立 QQ 登录会话。
+- 一个实例可以管理多个频道和自己的发布任务。
+- QQ 页面由 Electron `WebContentsView` 驱动。
+- SQLite 保存实例、频道、任务、发布目标状态、设置和日志。
+- 发布和评论以用户已经在 Tampermonkey 中实测通过的 DOM 流程为唯一标准。
+- 不再运行旧 CLI 发布器、旧 selector 发布器或单账号兼容发布器。
 
----
-
-## 2. 核心技术栈
+## 2. 技术栈
 
 ### Electron
 
-用途：桌面程序外壳和 GUI。
+负责：
+
+- 主进程
+- Renderer
+- Preload / IPC
+- 多实例窗口
+- 本地文件/目录选择
+- Windows 打包
+
+### WebContentsView + Chromium Session
 
 负责：
 
-- 主窗口和弹窗。
-- Renderer 页面。
-- Main Process。
-- IPC 通信。
-- 本地文件选择。
-- 后续 Windows EXE 打包。
+- 内嵌 `pd.qq.com`
+- 每实例独立浏览器视图
+- 每实例独立 persistent partition
+- QQ 登录态持久化
+- DOM 发帖 / 评论
 
-### Electron 内置 Chromium
-
-用途：腾讯频道网页自动化。
-
-负责：
-
-- 使用 `WebContentsView` 嵌入 Chromium，不依赖客户电脑安装 Chrome。
-- 每个实例使用独立的 `persist:qq-channel-instance-<id>` partition。
-- 每个实例单独持久化并加密备份登录态。
-- 打开腾讯频道。
-- 定位发帖区域。
-- 上传图片/视频。
-- 填写正文。
-- 点击发表。
-- 检测执行结果。
-- 后续失败截图、页面调试、登录失效判断。
-
-### SQLite / better-sqlite3
-
-用途：本地持久化数据。
-
-当前主要数据：
-
-- `instances`：实例。
-- `channels`：频道。
-- `tasks`：发布任务。
-- `task_targets`：任务对应的目标频道以及每个频道的独立状态。
-- `selector_configs`：腾讯频道页面元素选择器。
-- `logs`：运行日志。
-
-后续会继续扩展：
-
-- `settings`：全局及实例级设置。
-- `materials`：素材记录及去重信息。
-- `publish_records`：完整发布历史。
-- `templates`：标题、正文、评论模板。
-
----
-
-## 3. 进程架构
-
-```text
-Electron Renderer
-├─ 发布任务
-├─ 频道管理
-├─ 实例管理
-├─ 设置
-├─ 元素定位
-└─ 日志
-        │
-        │ IPC
-        ▼
-Electron Main Process
-├─ IPC Handlers
-├─ DB Service
-├─ BrowserManager
-├─ Task Scheduler（后续完善）
-└─ Publisher（后续拆分）
-        │
-        ├──────────► SQLite
-        │
-        ▼
-Electron WebContentsView
-        │
-        ▼
-每实例独立 Persistent Session
-        │
-        ▼
-https://pd.qq.com/
-```
-
----
-
-## 4. 实例与登录态设计
-
-一个实例代表一个独立登录的 QQ 账号。一个实例可以分配多个频道；实例之间的 Cookie、Web Storage、浏览器视图和发布 worker 相互隔离。
-
-建议目录结构：
-
-```text
-Electron userData/
-├─ publisher.db
-├─ profiles/
-│  ├─ 1/       # 实例 1 的加密登录备份
-│  └─ 2/       # 实例 2 的加密登录备份
-├─ logs/
-└─ screenshots/
-```
-
-Electron Session 使用：
+实例 partition：
 
 ```js
 session.fromPartition(`persist:qq-channel-instance-${instanceId}`)
 ```
 
-不同实例之间隔离：
+### SQLite / better-sqlite3
 
-- Cookie 与 Web Storage
-- Chromium 页面和登录状态
-- 频道配置
-- 发布任务
-- 任务目标及执行状态
+主要数据：
 
-Cookie、LocalStorage、IndexedDB、登录状态和腾讯频道网页缓存全局共用。目标效果是扫码登录一次后可操作所有实例；关闭软件重新打开仍可继续使用，如果腾讯侧主动让登录失效，则重新扫码一次即可。
+- `instances`
+- `channels`
+- `tasks`
+- `task_targets`
+- `settings`
+- `logs`
 
----
+历史安装中可能还存在 `selector_configs` 等旧结构。它们保留主要是为了兼容旧数据库，不代表当前发布流程仍读取可配置 selector。
 
-## 5. 腾讯频道页面适配策略
-
-腾讯频道是动态 Web 应用，不适合大量依赖固定屏幕坐标。
-
-项目采用：
+## 3. 当前进程结构
 
 ```text
-DOM / Locator 优先
-    ↓
-多候选选择器
-    ↓
-超时与状态检测
-    ↓
-截图及日志兜底
+Renderer（每实例独立窗口）
+├─ 发布任务
+├─ 内置浏览器
+├─ 频道管理
+├─ 设置
+└─ 日志
+        │
+        │ IPC
+        ▼
+Main Process
+├─ DB
+├─ BrowserManager
+├─ TaskScheduler
+├─ InstanceWindowSupport
+├─ Login Support
+├─ Channel Sync Support
+└─ Userscript DOM Publisher
+        │
+        ▼
+WebContentsView
+        │
+        ▼
+persist:qq-channel-instance-<id>
+        │
+        ▼
+https://pd.qq.com/
 ```
 
-关键页面元素全部进入 `selector_configs`，例如：
+启动入口：`src/main/bootstrap.js`。
 
-- 发帖编辑区域。
-- ProseMirror 正文编辑器。
-- 图片/视频上传 input。
-- 上传预览区域。
-- 发表按钮。
-- 发布结果或错误提示。
-
-从目前拿到的腾讯频道页面 HTML 可以确认页面使用 ProseMirror 编辑器，DOM 中存在 `.ProseMirror` 相关结构，因此正文输入不应继续按照普通 `textarea` 处理。
-
-原则：
-
-1. 不使用固定坐标作为主要方案。
-2. 不把腾讯页面 class 全部硬编码在业务逻辑里。
-3. 选择器可以在 UI 中测试和修改。
-4. 页面改版后优先更新配置。
-
----
-
-## 6. 发布引擎目标结构
-
-发布逻辑后续从 `BrowserManager` 继续拆分：
+当前发布相关加载顺序：
 
 ```text
-Publisher
-├─ openChannel()
-├─ checkLogin()
-├─ locateComposer()
-├─ fillContent()
-├─ uploadVideo()
-├─ uploadImages()
-├─ waitUploadReady()
-├─ submit()
-├─ verifyPublishResult()
-├─ publishComment()
-└─ captureFailure()
+publishing-data-support
+→ userscript-dom-publishing-support
+→ publish-runtime-feedback-support
 ```
 
-任务状态：
+含义：
+
+- `publishing-data-support`：只处理正文/评论数据模型、已发布标记和评论状态。
+- `userscript-dom-publishing-support`：唯一发布/评论执行主链。
+- `publish-runtime-feedback-support`：仅做 Electron 本地文件适配和实时步骤反馈，不提供第二套发布算法。
+
+## 4. 多实例设计
+
+每个实例隔离：
+
+- Cookie
+- LocalStorage / IndexedDB
+- Chromium session
+- WebContentsView
+- 登录备份
+- 频道
+- 任务
+- 发布队列
+
+实例窗口顶部的下拉框是“窗口导航器”，不是账号切换器。选择另一个实例只会打开或聚焦它自己的窗口。
+
+## 5. 登录设计
+
+点击“登录QQ”：
 
 ```text
-pending
-running
-success
-failed
-paused
-cancelled
+打开当前实例内置浏览器
+→ 自动打开 QQ 登录入口
+→ 自动尝试弹出二维码
+→ 用户扫码
+→ 自动轮询登录状态
+→ 保存实例登录信息
+→ 自动同步频道
 ```
 
-目标频道状态独立记录：
+只有看到明确的登录页/登录按钮证据时才允许把已确认登录的实例降级为未登录，避免普通频道页面 DOM 暂时变化导致误判掉线。
+
+## 6. 频道同步
+
+频道同步以自动化为主：
 
 ```text
-pending
-running
-success
-failed
+已登录
+→ 读取当前页面频道
+→ 遍历侧边栏其他频道
+→ 确认真实 URL 切换
+→ 去重
+→ 新增/更新 SQLite
 ```
 
-这样一个任务发布到 10 个频道时，即使第 7 个频道失败，前 6 个成功结果也不会丢失。
+发布队列工作期间，同实例频道同步必须延后，不能同时点击左侧频道，否则会与发帖操作争抢同一个页面。
 
----
+## 7. 发布引擎
 
-## 7. 桌面打包
-
-当前使用 Electron Builder 打包 Windows 版本。
-
-目标输出：
+当前核心 DOM 来源于已验证的油猴脚本，例如：
 
 ```text
-qqChannel.exe
+.publish-editor-container
+.publish-editor-container .ProseMirror
+.publish-editor-container input[type=file]
+.publish-editor-container .publish-button button
+.publish-editor-container .image-draggable-preview
+.publish-editor-container .image-mask
+.msgBox[data-index]
+.bottom-comment-input .bottom-input
+.comment-editor-container .ProseMirror
+.comment-editor-container .publish-button button
 ```
 
-打包阶段还需要处理：
+发帖顺序：
 
-- Electron 内置 Chromium 运行时。
-- better-sqlite3 原生模块重编译。
-- userData 数据目录。
-- 自动更新（后期）。
-- 应用日志和崩溃日志。
+```text
+openEditor
+→ typeInto
+→ 本地文件通过 CDP 注入 input[type=file]
+→ 保持油猴脚本同款文件选择事件语义
+→ 等 pubPreview
+→ 等 image-mask 消失
+→ 等发表按钮可用
+→ publish
+→ waitForNewPost
+```
+
+评论顺序：
+
+```text
+进入 /post/B_xxx
+→ 打开评论入口
+→ 写入评论 ProseMirror
+→ 等发送按钮可用
+→ 点击发送
+→ 通过评论数量 / 编辑器状态确认结果
+```
+
+原则：不要在这条链路外再叠加另一套“更聪明”的发布判断。
+
+## 8. 任务与防重复
+
+帖子正文：`tasks.body`
+
+发布后评论：`tasks.comment`
+
+每个目标频道独立保存：
+
+- `status`
+- `retry_count`
+- `last_error`
+- `post_published`
+- `post_url`
+- `comment_status`
+
+当帖子已经确认发布但评论失败时，重试只补评论，不重新发帖。
+
+## 9. Renderer 结构
+
+当前只保留一套任务入口：“新建发布任务”。
+
+视频任务内部可选择：
+
+- 单个视频
+- 视频目录批量
+
+已经移除：
+
+- 独立“批量视频目录”按钮和弹窗
+- 发帖元素定位 UI
+- 选择器测试 UI
+- 单账号 UI
+- 旧工作区 UI
+- 旧术语/任务筛选兼容脚本
+
+## 10. 打包
+
+Electron Builder：
+
+```bash
+npm run build:win
+```
+
+`better-sqlite3` 通过 `electron-builder install-app-deps` 重建 Electron 对应原生模块。
+
+## 11. 维护原则
+
+1. 发布算法只认已验证油猴流程。
+2. Electron 适配只解决本地文件、窗口、Session、IPC、日志和状态存储问题。
+3. 同一个实例只允许一条页面自动化链路操作 QQ 页面。
+4. 页面改动优先对照真实 DOM 和油猴脚本，不恢复旧发布器。
+5. 清理代码时优先删除真正没有入口的兼容层，而不是继续隐藏。 
