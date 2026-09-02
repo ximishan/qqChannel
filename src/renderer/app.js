@@ -602,15 +602,17 @@ function renderPublishResult(result = {}) {
 async function handlePublishUpdate(data = {}) {
   if (Number(data.instanceId) !== currentInstanceId) return;
   if (data.type === 'task-started') {
-    await activateTab('tasks');
-    showPublishProgress(`<strong>任务 #${data.taskId} 正在发布</strong><br>目标频道：${escapeHtml((data.channels || []).join('、'))}`);
+    // 发布期间直接展示当前实例的内置 QQ 浏览器，让用户能看到频道跳转、
+    // 图片/视频上传、发表和评论的真实页面状态。任务结束后再回任务列表。
+    await activateTab('browser');
   } else if (data.type === 'target-started') {
-    showPublishProgress(`<strong>任务 #${data.taskId} 正在发布到：${escapeHtml(data.channelName)}</strong><br>第 ${Number(data.attempt) || 1} 次尝试`);
+    // 频道切换和 DOM 操作都发生在当前内置浏览器中；确保视图仍然可见。
+    if (activeTab !== 'browser') await activateTab('browser');
+    else await syncBrowserView();
   } else if (data.type === 'target-waiting') {
-    showPublishProgress(`<strong>当前频道处理完成</strong><br>${Number(data.seconds) || 0} 秒后发布到：${escapeHtml(data.nextChannelName)}`);
+    // 同一任务包含多个频道时保持浏览器可见，直到整条任务处理结束。
   } else if (data.type === 'target-finished') {
-    const success = data.status === 'success';
-    showPublishProgress(`<strong>${escapeHtml(data.channelName)}：${success ? '发布成功' : '发布失败'}</strong>`, success ? 'success' : 'failed');
+    // 单个目标完成后不切走，避免多频道任务下一目标又重复闪烁切换。
   } else if (data.type === 'task-finished') {
     await activateTab('tasks');
     renderPublishResult(data);
