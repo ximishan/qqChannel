@@ -3,6 +3,7 @@
   let syncLoading = false;
   let autoLoadedForLogin = false;
   let lastSyncAt = 0;
+  let deferredSyncTimer = null;
 
   function escapeHtml(value = '') {
     return String(value).replace(/[&<>"']/g, char => ({
@@ -61,10 +62,43 @@
     }
   }
 
+  async function publishingBusy(instanceId) {
+    try {
+      const state = await window.api.schedulerState(instanceId);
+      return Boolean(state?.currentTaskId) || ['running', 'waiting', 'paused'].includes(String(state?.status || ''));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function deferSync(delay = 5000) {
+    if (deferredSyncTimer) return;
+    deferredSyncTimer = setTimeout(() => {
+      deferredSyncTimer = null;
+      syncRemoteGuilds({ silent: true, force: true }).catch(error => console.error(error));
+    }, delay);
+  }
+
   async function syncRemoteGuilds({ silent = false, force = false } = {}) {
     if (syncLoading) return null;
     const now = Date.now();
     if (!force && now - lastSyncAt < 5000) return null;
+
+    // 只有固定实例窗口允许执行频道同步。隐藏协调窗口绝不碰 QQ 页面，
+    // 否则会和实例窗口重复同步，甚至在发布过程中抢同一个浏览器页面。
+    const fixedInstanceId = Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0);
+    if (!fixedInstanceId) return null;
+
+    const instanceId = fixedInstanceId;
+    if (await publishingBusy(instanceId)) {
+      const result = document.querySelector('#qqChannelSyncResult');
+      if (result && !silent) {
+        result.style.color = '#c47b00';
+        result.textContent = '当前实例正在发布任务，频道同步已延后，避免干扰发帖页面。';
+      }
+      deferSync(5000);
+      return { instanceId, deferred: true };
+    }
 
     syncLoading = true;
     const button = document.querySelector('#btnSyncQQChannels');
@@ -79,9 +113,6 @@
     }
 
     try {
-      const instanceId = Number(document.querySelector('#channelInstanceSelect')?.value || window.QQCHANNEL_FIXED_INSTANCE_ID || 0);
-      if (!instanceId) throw new Error('当前窗口没有绑定有效实例');
-
       remoteGuilds = await window.api.listRemoteChannels(instanceId);
       renderRemoteGuilds();
 
@@ -126,6 +157,9 @@
   }
 
   function mountSyncUi() {
+    // 协调窗口只负责创建/打开实例，不允许自动同步频道。
+    if (!Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0)) return;
+
     const panel = document.querySelector('#channels');
     const split = panel?.querySelector('.split');
     if (!panel || !split || document.querySelector('#qqChannelSyncCard')) return;
@@ -149,7 +183,6 @@
     `;
     panel.insertBefore(card, split);
 
-    // 自动同步已经成为唯一主流程，手工新增入口不再展示。
     const manualCard = split.querySelector('.card:first-child');
     if (manualCard) manualCard.style.display = 'none';
 
@@ -171,10 +204,15 @@
       setTimeout(tryAutoLoad, 500);
     }
 
-    // 已登录实例再次进入“频道管理”页时自动检查一次，保证新建/改名频道能及时同步。
     document.querySelector('.tab[data-tab="channels"]')?.addEventListener('click', () => {
       const loggedIn = /^已登录/.test(document.querySelector('#loginStatus')?.textContent || '');
       if (loggedIn) syncRemoteGuilds({ silent: true }).catch(error => console.error(error));
+    });
+
+    // 发布结束后补一次自动同步；发布进行中绝不切换频道页面。
+    window.api.onPublishUpdate?.(data => {
+      if (Number(data?.instanceId || 0) !== Number(window.QQCHANNEL_FIXED_INSTANCE_ID || 0)) return;
+      if (data?.type === 'task-finished') deferSync(1200);
     });
   }
 
