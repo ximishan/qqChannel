@@ -33,7 +33,11 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
     }
 
     const selectors = this.db.getSelectorMap();
-    const timeout = options.wait === false ? 8000 : 12000;
+    // 普通登录检测保留原等待时间；任务临时页已经直接打开目标频道，
+    // 只做快速确认，避免每条任务在外围白等 8~12 秒。
+    const timeout = record.temporaryPublishPage
+      ? 1500
+      : (options.wait === false ? 8000 : 12000);
     const deadline = Date.now() + timeout;
     let resolved = null;
 
@@ -96,13 +100,17 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
         break;
       }
       if (domState.state === 'pending_login') resolved = domState;
-      await sleep(250);
+      await sleep(record.temporaryPublishPage ? 120 : 250);
     }
 
     if (resolved?.state === 'logged_in') {
-      await this.saveAuthState(id, record).catch(error => {
-        this.db.log('warn', `实例 #${id} QQ 登录会话保存失败：${String(error?.message || error)}`);
-      });
+      // 临时发布页与实例共享同一 persistent session，任务结束时还会统一保存一次。
+      // 这里不再为每次任务/评论重复导出 Cookie + Storage。
+      if (!record.temporaryPublishPage) {
+        await this.saveAuthState(id, record).catch(error => {
+          this.db.log('warn', `实例 #${id} QQ 登录会话保存失败：${String(error?.message || error)}`);
+        });
+      }
       const saved = this.db.getInstanceLoginSnapshot?.(id);
       const name = String(resolved.name || saved?.login_name || 'QQ账号').trim() || 'QQ账号';
       this.db.setInstanceLoginState?.(id, true, name);
