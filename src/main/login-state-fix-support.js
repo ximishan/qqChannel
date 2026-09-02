@@ -33,11 +33,10 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
     }
 
     const selectors = this.db.getSelectorMap();
-    // 普通登录检测保留原等待时间；任务临时页已经直接打开目标频道，
-    // 只做快速确认，避免每条任务在外围白等 8~12 秒。
-    const timeout = record.temporaryPublishPage
-      ? 1500
-      : (options.wait === false ? 8000 : 12000);
+    const fastCheck = options.wait === false || Boolean(record.temporaryPublishPage);
+    // 手动“检测登录”和二维码轮询只需要快速看一眼 DOM，不能每次最多卡 8 秒。
+    // 频道同步/强校验保留稍长等待，但也从 12 秒收敛到 6 秒。
+    const timeout = fastCheck ? 1500 : 6000;
     const deadline = Date.now() + timeout;
     let resolved = null;
 
@@ -47,7 +46,7 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
       // 独立 QQ 登录页本身就表示正在等待扫码，不应判定为退出登录。
       if (isQQLoginUrl(urlNow)) {
         resolved = { state: 'pending_login', name: '' };
-        await sleep(300);
+        await sleep(200);
         continue;
       }
 
@@ -100,16 +99,18 @@ module.exports = function installLoginStateFixSupport(DB, BrowserManager) {
         break;
       }
       if (domState.state === 'pending_login') resolved = domState;
-      await sleep(record.temporaryPublishPage ? 120 : 250);
+      await sleep(fastCheck ? 120 : 250);
     }
 
     if (resolved?.state === 'logged_in') {
-      // 临时发布页与实例共享同一 persistent session，任务结束时还会统一保存一次。
-      // 这里不再为每次任务/评论重复导出 Cookie + Storage。
+      // 快速检测不阻塞 UI：先返回“已登录”，登录会话备份在后台保存。
+      // 强校验场景再等待保存完成。
       if (!record.temporaryPublishPage) {
-        await this.saveAuthState(id, record).catch(error => {
+        const persist = () => this.saveAuthState(id, record).catch(error => {
           this.db.log('warn', `实例 #${id} QQ 登录会话保存失败：${String(error?.message || error)}`);
         });
+        if (fastCheck) persist();
+        else await persist();
       }
       const saved = this.db.getInstanceLoginSnapshot?.(id);
       const name = String(resolved.name || saved?.login_name || 'QQ账号').trim() || 'QQ账号';
