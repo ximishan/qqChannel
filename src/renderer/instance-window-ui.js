@@ -341,6 +341,12 @@
 
   async function bootCoordinator() {
     document.title = '腾讯频道批量发布工具 - 选择实例';
+    try {
+      window.resizeTo(760, 620);
+      const left = Math.max(0, Math.round((screen.availWidth - 760) / 2));
+      const top = Math.max(0, Math.round((screen.availHeight - 620) / 2));
+      window.moveTo(left, top);
+    } catch (_) {}
     document.body.classList.add('qq-launcher-mode');
     installLauncherStyles();
 
