@@ -15,6 +15,10 @@ let instanceRows = [];
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+const startupFixedInstanceId = (() => {
+  try { return Math.max(0, Number(new URLSearchParams(location.search).get('instanceId')) || 0); }
+  catch (_) { return 0; }
+})();
 
 async function syncBrowserView() {
   if (!currentInstanceId || !window.api.setBrowserView) return;
@@ -42,7 +46,9 @@ async function loadInstances() {
   select.innerHTML = instanceRows.map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
 
   if (!instanceRows.some(row => Number(row.id) === Number(currentInstanceId))) {
-    currentInstanceId = instanceRows.length ? Number(instanceRows[0].id) : null;
+    currentInstanceId = startupFixedInstanceId && instanceRows.some(row => Number(row.id) === startupFixedInstanceId)
+      ? startupFixedInstanceId
+      : (instanceRows.length ? Number(instanceRows[0].id) : null);
   }
   if (currentInstanceId) select.value = String(currentInstanceId);
 
@@ -569,56 +575,46 @@ function updateTaskSelectionUi() {
   if (info) info.textContent = `已选 ${selectedTaskIds.size} 条`;
 }
 
-function targetStatusLabel(status) {
-  return ({ pending:'待发', running:'发布中', success:'成功', failed:'失败' })[status] || status || '未知';
-}
-function renderTargetChips(targets = []) {
-  return targets.map(target => `<span class="target-status-chip ${escapeAttr(target.status)}">${escapeHtml(target.channel_name)} · ${escapeHtml(targetStatusLabel(target.status))}</span>`).join('');
-}
-function formatChannelList(names = []) {
-  const unique = [...new Set(names.filter(Boolean))];
-  const shown = unique.slice(0, 20).map((name, index) => `${index + 1}. ${name}`).join('\n');
-  if (!shown) return '（无）';
-  return unique.length > 20 ? `${shown}\n……另有 ${unique.length - 20} 个频道` : shown;
-}
-function showPublishProgress(content, state = '') {
-  const progress = $('#publishProgress');
-  if (!progress) return;
-  progress.className = `publish-progress${state ? ` ${state}` : ''}`;
-  progress.innerHTML = content;
-}
-function renderPublishResult(result = {}) {
-  const targets = result.targets || [];
-  const success = Boolean(result.success);
-  const summary = success
-    ? `任务 #${result.taskId} 发布完成：成功 ${result.successCount || 0} 个频道`
-    : `任务 #${result.taskId} 发布结束：成功 ${result.successCount || 0} 个，失败 ${result.failedCount || 0} 个频道`;
-  const chips = targets.length
-    ? `<div class="target-status-list publish-result-targets">${renderTargetChips(targets.map(target => ({ channel_name: target.channelName, status: target.status })))}</div>`
-    : '';
-  showPublishProgress(`<strong>${escapeHtml(summary)}</strong>${chips}`, success ? 'success' : 'failed');
+function renderTargetChips(targets) {
+  if (!targets?.length) return '<span class="target-status-chip empty">无目标</span>';
+  return targets.map(target => `<span class="target-status-chip ${escapeHtml(target.status)}" title="${escapeAttr(target.last_error || '')}">${escapeHtml(target.channel_name)} · ${escapeHtml(target.status)}</span>`).join('');
 }
 
-async function handlePublishUpdate(data = {}) {
-  if (Number(data.instanceId) !== currentInstanceId) return;
+function formatChannelList(names) {
+  return (names || []).map((name, index) => `${index + 1}. ${name}`).join('\n');
+}
+
+function renderPublishResult(result) {
+  const box = $('#publishResult');
+  if (!box) return;
+  if (!result) {
+    box.textContent = '没有返回结果。';
+    return;
+  }
+  if (result.success) {
+    box.textContent = result.postUrl ? `发布成功：${result.postUrl}` : '发布成功。';
+    return;
+  }
+  box.textContent = String(result.message || result.error || '发布失败');
+}
+
+async function handlePublishUpdate(data) {
+  if (!data) return;
+  if (data.instanceId && currentInstanceId && Number(data.instanceId) !== Number(currentInstanceId)) return;
   if (data.type === 'task-started') {
-    // 发布期间直接展示当前实例的内置 QQ 浏览器，让用户能看到频道跳转、
-    // 图片/视频上传、发表和评论的真实页面状态。任务结束后再回任务列表。
     await activateTab('browser');
-  } else if (data.type === 'target-started') {
-    // 频道切换和 DOM 操作都发生在当前内置浏览器中；确保视图仍然可见。
-    if (activeTab !== 'browser') await activateTab('browser');
-    else await syncBrowserView();
-  } else if (data.type === 'target-waiting') {
-    // 同一任务包含多个频道时保持浏览器可见，直到整条任务处理结束。
-  } else if (data.type === 'target-finished') {
-    // 单个目标完成后不切走，避免多频道任务下一目标又重复闪烁切换。
   } else if (data.type === 'task-finished') {
+    await loadTasks(true).catch(() => {});
+    await loadLogs().catch(() => {});
+    await refreshSchedulerState().catch(() => {});
     await activateTab('tasks');
-    renderPublishResult(data);
-    await Promise.all([loadTasks(true), loadLogs(), refreshSchedulerState()]);
+  } else if (data.type === 'target-finished') {
+    await loadTasks(true).catch(() => {});
   }
 }
 
 if (window.api.onPublishUpdate) window.api.onPublishUpdate(data => handlePublishUpdate(data).catch(() => {}));
-loadInstances();
+// 顶层协调窗口现在只是“实例启动器”。不要在这里调用 loadInstances()，
+// 否则它会自动选择第一个实例、触发登录检测，并提前创建该实例的 QQ WebContentsView。
+// 只有带 ?instanceId=... 的真实实例窗口才初始化完整业务界面。
+if (startupFixedInstanceId) loadInstances();
